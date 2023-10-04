@@ -1,0 +1,12 @@
+__pycache__
+*.log
+*.egg-info/
+runs/
+wandb/
+docs/source/tutorials/saved_models/
+*.ipynb_checkpoints/
+*.zip
+*build
+_*
+.pytest_cache
+.venv

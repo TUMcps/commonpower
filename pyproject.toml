@@ -1,0 +1,42 @@
+[project]
+name = "commonpower"
+version = "0.0.2"
+authors = [
+  { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
+  { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
+]
+description = "A package for the simulation and control of power systems"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+keywords = ["Power System", "Smart Grid", "Control", "Safety", "Simulation"]
+
+dependencies = [
+    "wandb",
+    "tensorboard",
+    "matplotlib",
+    "gurobipy",
+    "pyomo",
+    "randomtimestamp",
+    "prettytable",
+    "stable-baselines3",
+]
+
+[project.optional-dependencies]
+ci = ["pytest", "pandapower"]
+full = ["jupyter", "pandapower"]
+docs = ["myst_parser", 
+        "sphinx_autodoc_typehints", 
+        "nbsphinx", 
+        "sphinx_rtd_theme", 
+        "sphinx_autorun"]
+
+[project.urls]
+"Homepage" = "https://github.com/TUMcps/commonpower"
+"Documentation" = "https://commonpower.readthedocs.io"
