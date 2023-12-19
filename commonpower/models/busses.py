@@ -2,12 +2,15 @@
 Collection of bus models.
 """
 from __future__ import annotations
+
 from typing import List
-from pyomo.core import ConcreteModel, Expression, quicksum
+
 import pyomo.environ as pyo
+from pyomo.core import ConcreteModel, Expression, quicksum
 
 from commonpower.core import Bus, Node
-from commonpower.modelling import ElementTypes as et, MIPExpressionBuilder, ModelElement
+from commonpower.modelling import ElementTypes as et
+from commonpower.modelling import MIPExpressionBuilder, ModelElement
 from commonpower.utils.cp_exceptions import EntityError
 
 
@@ -32,7 +35,9 @@ class OptSelfSufficiencyNode(Bus):
 
 class RTPricedBus(Bus):
     """
-    Bus which can directly trade its energy in real-time.
+    Bus which can directly trade its energy in real-time in stand-alone mode.
+    It can also be child of a StructureNode (e.g., energy community, P2P market).
+    In that case, the parent structure determines the cost of the bus.
 
     .. runblock:: pycon
 
@@ -53,6 +58,22 @@ class RTPricedBus(Bus):
 
         return model_elements
 
+    def __init__(self, name: str, config: dict = {}) -> None:
+        super().__init__(name, config)
+        self.stand_alone = True  # indicates if the bus is child of a StructureNode (energy community, P2P market)
+
+    def set_as_structure_member(self) -> None:
+        """
+        Sets a flag indicating that the bus is a member of some structure (e.g., energy community, P2P market).
+        """
+        self.stand_alone = False
+
+    def set_as_stand_alone(self) -> None:
+        """
+        Sets a flag indicating that the bus is stand-alone.
+        """
+        self.stand_alone = True
+
     def _get_additional_constraints(self) -> List[ModelElement]:
         """
         Sets a binary buying indicator. \\
@@ -65,11 +86,16 @@ class RTPricedBus(Bus):
             \\end{array}
             \\right.
         """
-        mb = MIPExpressionBuilder(self)
+        model_elements = super()._get_additional_constraints()  # fetch internal power balance constraints
 
-        mb.from_geq("p", 0, "p_eb", is_new=True)
+        if self.stand_alone is True:
+            mb = MIPExpressionBuilder(self)
 
-        return mb.model_elements
+            mb.from_geq("p", 0, "p_eb", is_new=True)
+
+            return model_elements + mb.model_elements
+        else:
+            return model_elements
 
     def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
         """
@@ -77,21 +103,24 @@ class RTPricedBus(Bus):
             cost = \\sum_{i \\in components} cost_i + p * psib * p_{eb} + p * psis * (1 - p_{eb})
         """
         if self.nodes:
-            return (
-                quicksum([n.cost_fcn(model, t) for n in self.nodes])
-                + (
-                    self.get_pyomo_element("p", model)[t]
-                    * (1 - self.get_pyomo_element("p_eb", model)[t])
-                    * self.get_pyomo_element("psis", model)[t]
-                    * self.tau
+            if self.stand_alone is True:
+                return (
+                    quicksum([n.cost_fcn(model, t) for n in self.nodes])
+                    + (
+                        self.get_pyomo_element("p", model)[t]
+                        * (1 - self.get_pyomo_element("p_eb", model)[t])
+                        * self.get_pyomo_element("psis", model)[t]
+                        * self.tau
+                    )
+                    + (
+                        self.get_pyomo_element("p", model)[t]
+                        * self.get_pyomo_element("p_eb", model)[t]
+                        * self.get_pyomo_element("psib", model)[t]
+                        * self.tau
+                    )
                 )
-                + (
-                    self.get_pyomo_element("p", model)[t]
-                    * self.get_pyomo_element("p_eb", model)[t]
-                    * self.get_pyomo_element("psib", model)[t]
-                    * self.tau
-                )
-            )
+            else:
+                return quicksum([n.cost_fcn(model, t) for n in self.nodes])
         else:
             return 0.0
 
@@ -141,13 +170,11 @@ class TradingBus(Bus):
 
     @classmethod
     def _get_model_elements(cls) -> List[ModelElement]:
-
         model_elements = [
             ModelElement("p", et.INPUT, "active power", bounds=[-1e6, 1e6]),
             ModelElement("q", et.VAR, "reactive power", bounds=[-1e6, 1e6]),
             ModelElement("v", et.VAR, "voltage magnitude", bounds=[0.9, 1.1]),
             ModelElement("d", et.VAR, "voltage angle", bounds=[-15, 15]),
-
             ModelElement("psib", et.DATA, "buying price", pyo.Reals),
             ModelElement("psis", et.DATA, "selling price", pyo.Reals),
         ]
@@ -177,19 +204,16 @@ class TradingBus(Bus):
         .. math::
             cost = -p * psis * p_{es} -p * psib * (1 - p_{es})
         """
-        return (
-            - (
-                self.get_pyomo_element("p", model)[t]
-                * (1 - self.get_pyomo_element("p_es", model)[t])
-                * self.get_pyomo_element("psib", model)[t]
-                * self.tau
-            )
-            - (
-                self.get_pyomo_element("p", model)[t]
-                * self.get_pyomo_element("p_es", model)[t]
-                * self.get_pyomo_element("psis", model)[t]
-                * self.tau
-            )
+        return -(
+            self.get_pyomo_element("p", model)[t]
+            * (1 - self.get_pyomo_element("p_es", model)[t])
+            * self.get_pyomo_element("psib", model)[t]
+            * self.tau
+        ) - (
+            self.get_pyomo_element("p", model)[t]
+            * self.get_pyomo_element("p_es", model)[t]
+            * self.get_pyomo_element("psis", model)[t]
+            * self.tau
         )
 
     def _get_internal_power_balance_constraints(self) -> List[ModelElement]:
@@ -213,13 +237,12 @@ class TradingBusLinear(Bus):
 
     @classmethod
     def _get_model_elements(cls) -> List[ModelElement]:
-
         model_elements = [
             ModelElement("p", et.INPUT, "active power", bounds=[-1e6, 1e6]),
             ModelElement("q", et.VAR, "reactive power", bounds=[-1e6, 1e6]),
             ModelElement("v", et.VAR, "voltage magnitude", bounds=[0.9, 1.1]),
             ModelElement("d", et.VAR, "voltage angle", bounds=[-15, 15]),
-            ModelElement("psi", et.DATA, "market price", pyo.Reals)
+            ModelElement("psi", et.DATA, "market price", pyo.Reals),
         ]
 
         return model_elements
@@ -229,9 +252,7 @@ class TradingBusLinear(Bus):
         .. math::
             cost = -p * psi
         """
-        return - (
-            self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau
-        )
+        return -(self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau)
 
     def _get_internal_power_balance_constraints(self) -> List[ModelElement]:
         # overwrites super(), because otherwise p=0 would be enforced

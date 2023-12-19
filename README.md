@@ -78,7 +78,7 @@ Multi-agent reinforcement learning
 ----------------------------------
 
 At the moment, CommonPower supports multi-agent reinforcement learning using the IPPO/MAPPO implementation detailed in this [paper](https://arxiv.org/abs/2103.01955). 
-Since we had to make a few adjustments, we forked the original repository. Please clone our [fork](https://github.com/Chrisschmit/on-policy), cd into the repository and install the package to your virtual environment using
+Since we had to make a few adjustments, we forked the original repository. Please clone our [fork](https://github.com/TUMcps/on-policy), cd into the repository and install the package to your virtual environment using
 `pip install -e .`.
 
 Gurobi

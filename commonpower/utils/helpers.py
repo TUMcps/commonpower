@@ -1,8 +1,8 @@
-from typing import Union, List
-from datetime import datetime
-import pandas as pd
 import functools
+from datetime import datetime
+from typing import List, Union
 
+import pandas as pd
 from pyomo.core import ConcreteModel
 
 # https://stackoverflow.com/questions/31174295/getattr-and-setattr-on-nested-subobjects-chained-properties/31174427
@@ -20,6 +20,7 @@ def rgetattr(obj, attr, *args):
     """
     Recursive version of getattr() capable of getting an attribute of a nested subobject.
     """
+
     def _getattr(obj, attr):
         return getattr(obj, attr, *args)
 
@@ -66,7 +67,7 @@ def model_root(model: ConcreteModel) -> ConcreteModel:
         root = model
         parent = model.parent_block()
         if parent is not None:
-            root = parent.get_root(parent)
+            root = get_root(parent)
         return root
 
     return get_root(model)

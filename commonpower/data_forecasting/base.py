@@ -2,10 +2,11 @@
 Base classes and generic functionality for data sources and forecasters.
 """
 from __future__ import annotations
-from typing import Union, List
+
+from datetime import datetime, timedelta
+from typing import List, Union
 
 import numpy as np
-from datetime import datetime, timedelta
 
 from commonpower.utils import to_datetime
 

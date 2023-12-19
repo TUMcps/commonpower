@@ -2,10 +2,12 @@
 Collection of line models.
 """
 from __future__ import annotations
+
 import pyomo.environ as pyo
 
 from commonpower.core import Line
-from commonpower.modelling import ModelElement, ElementTypes as et
+from commonpower.modelling import ElementTypes as et
+from commonpower.modelling import ModelElement
 
 
 class BasicLine(Line):
@@ -13,6 +15,7 @@ class BasicLine(Line):
     Basic line model.
     Defines model elements current, active power, conductance, and susceptance.
     """
+
     CLASS_INDEX = "lb"
 
     @classmethod

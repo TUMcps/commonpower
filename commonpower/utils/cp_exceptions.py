@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
+
 from pyomo.core import ConcreteModel
 
 if TYPE_CHECKING:
-    from commonpower.modelling import ModelEntity
     from commonpower.control.controllers import BaseController
+    from commonpower.modelling import ModelEntity
 
 
 class EntityError(Exception):

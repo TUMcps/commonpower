@@ -13,7 +13,7 @@ def get_default_solver() -> OptSolver:
     """
     Returns a solver instance with certain option values.
     """
-    solver = SolverFactory('gurobi')
+    solver = SolverFactory('gurobi', solver_io='python', manage_env=True)
     solver.options.update(DEFAULT_SOLVER_OPTIONS)
 
     return solver

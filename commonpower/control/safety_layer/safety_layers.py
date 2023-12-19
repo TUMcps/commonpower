@@ -1,17 +1,18 @@
 """
 Collection of safety layers.
 """
-from typing import List, Dict, Tuple
-from commonpower.modelling import ModelEntity
-from pyomo.core import ConcreteModel, Objective, quicksum
-import pyomo.environ as pyo
-from pyomo.environ import value
-from pyomo.environ import SolverFactory
-from pyomo.opt.solver import OptSolver
-from pyomo.opt import TerminationCondition
-from commonpower.utils.cp_exceptions import EntityError
-from commonpower.core import System
 from copy import deepcopy
+from typing import Dict, List, Tuple
+
+import pyomo.environ as pyo
+from pyomo.core import ConcreteModel, Objective, quicksum
+from pyomo.environ import SolverFactory, value
+from pyomo.opt import TerminationCondition
+from pyomo.opt.solver import OptSolver
+
+from commonpower.core import System
+from commonpower.modelling import ModelEntity
+from commonpower.utils.cp_exceptions import EntityError
 
 
 class BaseSafetyLayer:
@@ -159,7 +160,7 @@ class ActionProjectionSafetyLayer(BaseSafetyLayer):
                     # action projection objective function: (a_RL[t] - a_safe[t])^2 for all t in action_horizon
                     # first step: (a_RL[t] - a_safe[t]) for all t and for all input elements of the current node
                     node_fcn = [
-                        self.unsafe_action[global_node_ids[i]][el_names[i]]
+                        self.unsafe_action[global_node_ids[i]][el_names[i]][t]
                         - node.get_pyomo_element(el_names[i], self.model)[t]
                         for t in action_horizon
                         for i in range(len(el_names))

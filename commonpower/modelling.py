@@ -2,27 +2,27 @@
 Generic abstractions and functionality for interacting with the pyomo layer.
 """
 from __future__ import annotations
-from typing import Union, Dict, List, Type
-import random
+
 import json
 import logging
-import pandas as pd
-from copy import deepcopy
-from enum import IntEnum
-import numpy as np
-import gymnasium as gym
-from prettytable import PrettyTable
-from datetime import datetime
-
-import matplotlib.pyplot as plt
-
-from pyomo.core import ConcreteModel, Param, Set, Var, Constraint, Objective, Block, Expression
-import pyomo.environ as pyo
+import random
 from collections import OrderedDict
+from copy import copy, deepcopy
+from datetime import datetime
+from enum import IntEnum
+from typing import Dict, List, Type, Union
 
-from commonpower.utils.param_initialization import ParamInitializer
+import gymnasium as gym
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pyomo.environ as pyo
+from prettytable import PrettyTable
+from pyomo.core import Block, ConcreteModel, Constraint, Expression, Objective, Param, Set, Var
+
+from commonpower.utils import rgetattr, rhasattr, rsetattr
 from commonpower.utils.cp_exceptions import EntityError
-from commonpower.utils import rgetattr, rsetattr, rhasattr
+from commonpower.utils.param_initialization import ParamInitializer
 
 
 class ElementTypes(IntEnum):
@@ -248,7 +248,7 @@ class ModelHistory:
             retention (int, optional): How many logs are kept before deleting from the top (essentially a ring buffer).
                 When set to -1, all logs will be kept. Defaults to -1.
         """
-        self.model_entities = model_entities
+        self.model_entities = copy(model_entities)
         self.retention = retention
 
         self.history = []
@@ -446,12 +446,13 @@ class ModelHistory:
         legend_labels = []
         for idx, hist in enumerate([self] + histories):
             for element_id in hist.history[0][1].keys():
-                legend_labels.append(f"Hist {idx}: {element_id}")
+                label = f"Hist {idx}: {element_id}" if len(histories) > 1 else element_id
+                legend_labels.append(label)
                 vals = [
                     t[1][element_id][0] if isinstance(t[1][element_id], np.ndarray) else t[1][element_id]
                     for t in hist.history
                 ]  # only realized values
-                time_series[f"Hist {idx}: {element_id}"] = vals
+                time_series[label] = vals
                 plt.plot(range(len(vals)), vals)
 
         plt.xticks(
@@ -472,7 +473,7 @@ class ModelHistory:
             return time_series
 
     def _get_entity_tree(self, entities: list[ModelEntity] = None) -> list[ModelEntity]:
-        entities = self.model_entities if entities is None else entities
+        entities = copy(self.model_entities) if entities is None else copy(entities)
         tmp = []
         for ent in entities:
             tmp += ent.get_children()
@@ -999,6 +1000,7 @@ class ControllableModelEntity(ModelEntity):
     """
     This class abstracts ModelEntities which are controllable.
     """
+
     def register_controller(self, controller):
         """
         Register a controller with this node
@@ -1220,8 +1222,7 @@ class ControllableModelEntity(ModelEntity):
 
 
 class MIPExpressionBuilder:
-
-    def __init__(self, entity: ModelEntity, M: int = 1e3, eps: float = 1e-4):
+    def __init__(self, entity: ModelEntity, M: int = 1e3, eps: float = 1e-5):
         """
         The expression builder allows to convert logical expression into mixed integer constraints.
         In the process it also creates all necessary auxiliary variables.

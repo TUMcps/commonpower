@@ -1,14 +1,16 @@
 """
 Base API (based on gymnasium API) between controlled system and RL training algorithms.
 """
-from typing import Optional, Tuple
+from collections import OrderedDict, deque
 from copy import copy, deepcopy
+from datetime import datetime
+from typing import Optional, Tuple
+
 import gymnasium as gym
+import numpy as np
+
 from commonpower.modelling import ControllableModelEntity
 from commonpower.utils.cp_exceptions import ControllerError
-from datetime import datetime
-from collections import OrderedDict, deque
-import numpy as np
 
 
 class ControlEnv(gym.Env):
@@ -51,7 +53,6 @@ class ControlEnv(gym.Env):
             self.action_space, self.original_action_space = self._get_normalized_action_space()
         else:
             self.action_space = self._get_action_space()
-        self.horizon = system.horizon
 
         # whether to just continuously step through the year or not
         self.continuous_control = continuous_control
@@ -245,19 +246,7 @@ class ControlEnv(gym.Env):
                     action_low = self.original_action_space[ctrl_id][node_id][el_id].low
                     action_high = self.original_action_space[ctrl_id][node_id][el_id].high
 
-                    new_action = (
-                        action[ctrl_id][node_id][el_id]
-                        - (
-                            -1
-                            * np.ones(
-                                (
-                                    len(
-                                        action_high,
-                                    )
-                                )
-                            )
-                        )
-                    ) / 2 * np.ones(
+                    new_action = (action[ctrl_id][node_id][el_id] - (-1 * np.ones((len(action_high,))))) / 2 * np.ones(
                         (
                             len(
                                 action_high,

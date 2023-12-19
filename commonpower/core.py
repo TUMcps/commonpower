@@ -2,27 +2,31 @@
 Core power system entities.
 """
 from __future__ import annotations
-from typing import Union, Tuple, Callable, Dict, List
-import re
-from copy import copy
-from pyomo.core import ConcreteModel, Set, Objective, value, quicksum, Expression
-from pyomo.opt import TerminationCondition
-from pyomo.environ import SolverFactory
-from pyomo.opt.solver import OptSolver
-from datetime import datetime, timedelta
-from randomtimestamp import randomtimestamp
-import pickle
-import gymnasium as gym
-import logging
-from collections import OrderedDict
 
+import logging
+import pickle
+import random
+import re
+from collections import OrderedDict
+from copy import copy
+from datetime import datetime, timedelta
+from typing import Callable, Dict, List, Tuple, Union
+
+import gymnasium as gym
+import numpy as np
+import pandas as pd
+from pyomo.core import ConcreteModel, Expression, Objective, Set, quicksum, value
+from pyomo.environ import SolverFactory
+from pyomo.opt import TerminationCondition
+from pyomo.opt.solver import OptSolver
+from randomtimestamp import randomtimestamp
+
+from commonpower.control.environments import ControlEnv
 from commonpower.data_forecasting import DataProvider
-from commonpower.modelling import ElementTypes, ModelElement, ModelEntity, ModelHistory, ControllableModelEntity
-from commonpower.data_forecasting import *
-from commonpower.utils.param_initialization import ParamInitializer
+from commonpower.modelling import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity, ModelHistory
 from commonpower.utils import rsetattr
 from commonpower.utils.cp_exceptions import EntityError, InstanceError
-from commonpower.control.environments import ControlEnv
+from commonpower.utils.param_initialization import ParamInitializer
 
 
 class PowerFlowModel:
@@ -109,7 +113,11 @@ class System(ControllableModelEntity):
 
         self.t = None  # current time
         self.tau = None  # time step
-        self.horizon = None  # forecast horizon
+        self.forecast_horizon = None  # forecast horizon
+
+        # how long an episode is (the controller could look 24 hours into the future but control for 10 days)
+        self.control_horizon = None
+
         self.start_time = None  # start of simulation time
         self.continuous_control = None  # whether to consider an infinite control horizon
 
@@ -134,9 +142,7 @@ class System(ControllableModelEntity):
         """
         if at_index is None:
             self.nodes.append(node)
-            self.nodes[-1].set_id("", len(self.nodes) - 1)
         else:
-            node.set_id("", at_index)
             self.nodes[at_index] = node
         return self
 
@@ -155,7 +161,8 @@ class System(ControllableModelEntity):
 
     def initialize(
         self,
-        horizon: int = 24,
+        forecast_horizon: int = 24,
+        control_horizon: int = 24,
         tau: timedelta = timedelta(hours=1),
         continuous_control: bool = False,
         solver: OptSolver = SolverFactory("gurobi"),
@@ -168,23 +175,26 @@ class System(ControllableModelEntity):
         if controllers have been defined appropriately.
 
         Args:
-            horizon (int, optional): Control horizon. This specifies the number of timesteps
+            forecast_horizon (int, optional): Forecast horizon. This specifies the number of time steps
                 the controllers "look into the future". Defaults to 24.
+            control_horizon (int, optional): Control horizon. This specifies the number of time steps the system will
+            run before terminating (is_done=True) if continuous control is disabled.
             tau (timedelta, optional): Sample time, i.e., the period of time between to control actions.
                 This needs to match the frequency of data providers. Defaults to timedelta(hours=1).
             continuous_control (bool): whether to use an infinite control horizon
             solver (OptSolver, optional): Name of the solver for the optimization problem that will be called by Pyomo.
         """
         self.tau = tau
-        self.horizon = horizon
+        self.forecast_horizon = forecast_horizon
+        self.control_horizon = control_horizon
         self.continuous_control = continuous_control
         self.solver = solver
 
         self.add_to_model(ConcreteModel())
 
-        # check if all dataproviders and constants have been defined
+        # check if all data providers and constants have been defined
         for node in self.nodes:
-            node.validate(horizon, tau)
+            node.validate(forecast_horizon, tau)
         # check if all nodes with input elements have a controller assigned
         # add unique control to controller dictionary
         ctrl_ids = []
@@ -217,6 +227,8 @@ class System(ControllableModelEntity):
                     )
             # upper limit reduced by one day to not run into problems during update()
             date_range[1] = date_range[1] - timedelta(days=1)
+        else:  # if no data providers are defined
+            date_range = [datetime(1900, 1, 1), datetime(2100, 12, 31)]
 
         self.date_range = date_range
 
@@ -270,7 +282,7 @@ class System(ControllableModelEntity):
         """
         self.model = model  # store reference to model internally
 
-        self.model.t = Set(initialize=range(0, self.horizon + 1))
+        self.model.t = Set(initialize=range(0, self.forecast_horizon + 1))
 
         # the tau value in the model is a float indicating tau / 1h, i.e., the faction/multiple of one hour.
         tau_float = self.tau / timedelta(hours=1)
@@ -278,13 +290,15 @@ class System(ControllableModelEntity):
         # self.model.tau = Param(initialize=tau_float)
         # self.model.horizon = Param(initialize=self.horizon, domain=pyo.NonNegativeIntegers)
 
-        for node in self.nodes:
-            node.add_to_model(model, tau=tau_float, horizon=self.horizon)
+        for idx, node in enumerate(self.nodes):
+            node.set_id("", idx)
+            node.add_to_model(model, tau=tau_float, horizon=self.forecast_horizon)
 
         for line in self.lines:
             line.add_to_model(model)
 
-        self.power_flow_model.add_to_model(model, self.nodes, self.lines)
+        # for power flow we extract all child nodes from StructureNodes
+        self.power_flow_model.add_to_model(model, self.get_first_level_non_structure_nodes(), self.lines)
 
         self.model_elements = self._augment_model_elements(self._get_model_elements())
 
@@ -292,7 +306,7 @@ class System(ControllableModelEntity):
             self._add_model_element(el)
 
         def obj_fcn(model):
-            return quicksum([n.cost_fcn(model, t) for t in range(self.horizon) for n in self.nodes])
+            return quicksum([n.cost_fcn(model, t) for t in range(self.forecast_horizon) for n in self.nodes])
 
         self.model.obj1 = Objective(expr=obj_fcn)
 
@@ -515,7 +529,7 @@ class System(ControllableModelEntity):
         if self.continuous_control:
             done = False
         else:
-            done = self.t == self.start_time + self.horizon * self.tau
+            done = self.t == self.start_time + self.control_horizon * self.tau
         return done
 
     def observe(self) -> dict:
@@ -563,7 +577,7 @@ class System(ControllableModelEntity):
 
         output += "\nLines: \n"
         for line in self.lines:
-            output += f"{print_indentation}{line.id}: {line.src.id} -- {line.dst.id} \n"
+            output += f"{print_indentation}{line.id}: {line.src.name} -- {line.dst.name} \n"
 
         print(output)
 
@@ -574,7 +588,7 @@ class System(ControllableModelEntity):
         """
         Computes the cost based on the specified cost_fcn and stores the result in the systems' cost parameter.
         """
-        for t in range(self.horizon):
+        for t in range(self.forecast_horizon):
             self.set_value(self.instance, "cost", value(self.cost_fcn(self.instance, t)), idx=t)
 
         for node in self.nodes:
@@ -590,9 +604,30 @@ class System(ControllableModelEntity):
 
         return all_children
 
+    def get_first_level_non_structure_nodes(self) -> List[ModelEntity]:
+        """
+        This "unpacks" all nodes/buses which are first level children of StructureNodes.
+        Used for determining all buses relevant for power flow caluculations.
+
+        Returns:
+            list[ModelEntity]: List of child entities.
+        """
+
+        def unpack_structure_node(node) -> List[ModelEntity]:
+            return [unpack_structure_node(n) if isinstance(n, StructureNode) else n for n in node.nodes]
+
+        children = copy(self.nodes)
+        all_children = []
+        for child in children:
+            if isinstance(child, StructureNode):
+                all_children += unpack_structure_node(child)
+            else:
+                all_children.append(child)
+
+        return all_children
+
 
 class Line(ControllableModelEntity):
-
     CLASS_INDEX = "l"
 
     def __init__(self, src: Node, dst: Node, config: dict = {}, name: str = "line") -> Line:
@@ -615,11 +650,12 @@ class Line(ControllableModelEntity):
         self.src = src
         self.dst = dst
 
-        self.id = self.CLASS_INDEX + "_" + src.id + "_" + dst.id
+        # self.id = self.CLASS_INDEX + "_" + src.id + "_" + dst.id
+        # This does not work anymore since the ids are set on sys init now
+        self.id = self.CLASS_INDEX + "_" + "%05x" % random.randrange(16**5)
 
 
 class Node(ControllableModelEntity):
-
     CLASS_INDEX = "nx"
 
     @classmethod
@@ -657,7 +693,7 @@ class Node(ControllableModelEntity):
         Base class providing functionality for busses and components.
 
         Args:
-            name (str): Name of the node object.
+            name (str): Name of the Node object.
             config (dict, optional): Configuration for defined model elements. Defaults to {}.
         """
         super().__init__(name, config)
@@ -682,8 +718,7 @@ class Node(ControllableModelEntity):
             parent_identity (str, optional): Id of the parent entity. Defaults to "".
             number (int, optional): Number assigned by the parent entity. Defaults to 0.
         """
-        if self.id:
-            raise EntityError(self, f"This node has already been added to a parent. Its current id is {self.id}")
+
         parent_number = re.findall(r"\d+", parent_identity.split(".")[-1])
         parent_number = parent_number[0] if len(parent_number) > 0 else ""
 
@@ -727,7 +762,8 @@ class Node(ControllableModelEntity):
 
         rsetattr(self.model, self.id, ConcreteModel())
 
-        for node in self.nodes:
+        for idx, node in enumerate(self.nodes):
+            node.set_id(self.id, idx)
             node.add_to_model(self.model, tau=self.tau, horizon=self.horizon)
 
         self.model_elements = self._augment_model_elements(self._get_model_elements())
@@ -738,12 +774,12 @@ class Node(ControllableModelEntity):
         for el in self.model_elements:
             self._add_model_element(el)
 
-    def validate(self, horizon: int, tau: timedelta) -> None:
+    def validate(self, forecast_horizon: int, tau: timedelta) -> None:
         """
         Validates if data providers have compatible configurations and if controllers have been defined appropriately.
 
         Args:
-            horizon (int): Control horizon.
+            forecast_horizon (int): Forecast horizon.
             tau (timedelta): Sample time.
         """
         # check if all required dataproviders are attached
@@ -758,11 +794,11 @@ class Node(ControllableModelEntity):
         # check if all dataproviders have an appropriate forecast horizon, data frequency
         for dp in self.data_providers:
             dp_horizon = int(dp.horizon / dp.frequency)
-            if horizon != dp_horizon:
+            if forecast_horizon != dp_horizon:
                 raise EntityError(
                     self,
                     f"The Data Provider providing {dp.get_variables()} must implement a forecast horizon of"
-                    f" {horizon} instead of {dp_horizon}",
+                    f" {forecast_horizon} instead of {dp_horizon}",
                 )
             if dp.frequency != tau:
                 raise EntityError(
@@ -782,7 +818,7 @@ class Node(ControllableModelEntity):
                 )
 
         for node in self.nodes:
-            node.validate(horizon, tau)
+            node.validate(forecast_horizon, tau)
 
         self.is_valid = True
 
@@ -826,11 +862,8 @@ class Node(ControllableModelEntity):
         Returns:
             Node: Node instance.
         """
-        if not self.id:
-            raise EntityError(self, "Cannot add node. Node id is not defined.")
 
         self.nodes.append(node)
-        self.nodes[-1].set_id(self.id, len(self.nodes) - 1)
         return self
 
     def reset(self, instance: ConcreteModel, at_time: datetime) -> None:
@@ -931,11 +964,113 @@ class Node(ControllableModelEntity):
         """
         new_model_elements = []
 
-        new_model_elements += self._get_internal_power_balance_constraints()
         new_model_elements += self._get_additional_constraints()
         new_model_elements += self._get_dynamic_fcn()
 
         return model_elements + new_model_elements
+
+    def _get_dynamic_fcn(self) -> List[ModelElement]:
+        """
+        Returns constraints on all state variables representing how the states change between timesteps.
+
+        Returns:
+            List[ModelElement]: Generated constraints.
+        """
+        return []
+
+    def _get_additional_constraints(self) -> List[ModelElement]:
+        """
+        Returns additional constraints on model variables.
+        This is a utility to keep the _get_model_elements() method clean.
+
+        Returns:
+            List[ModelElement]: List of additional constraint elements.
+        """
+        return []
+
+    def _update_state(self):
+        """
+        Updates states by moving one timestep "forward", i.e., state[t] <- state[t+1]
+        """
+        for el in self.model_elements:
+            if el.type == ElementTypes.STATE:
+                # one timestep forward, i.e. state[t] <- state[t+1]
+                self.set_value(self.instance, el.name, self.get_value(self.instance, el.name)[1], idx=0, fix_value=True)
+
+    def _update_data(self, at_time: datetime):
+        """
+        Reads data providers.
+        """
+        obs_dict = {}
+        for dp in self.data_providers:
+            obs_dict.update(dp.observe(at_time))
+
+        # update model
+        for el in self.model_elements:
+            if el.type == ElementTypes.DATA:
+                self.set_value(self.instance, el.name, obs_dict[el.name])
+
+    def _additional_updates(self) -> None:
+        """
+        Additional update actions can be defined here.
+        This could for example be the "true" dynamics of the system, or maniputations of parameters.
+        """
+
+
+class StructureNode(Node):
+    CLASS_INDEX = "sn"
+
+    def __init__(self, name: str, config: dict = {}) -> StructureNode:
+        """
+        Structure nodes model abstract entities such as energy communities, P2P markets, etc.
+        They do not implement any physical characteristcs and are ignored in the power flow constraints.
+
+        Args:
+            name (str): Name of the StructureNode object.
+            config (dict, optional): Configuration for defined model elements. Defaults to {}.
+        """
+        super().__init__(name, config)
+
+
+class Bus(Node):
+    CLASS_INDEX = "n"
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        """
+        Returns primary model elements.
+        Busses specify active power (p), reactive power (q), voltage magnitude (v), and voltage angle (d).
+
+        Returns:
+            List[ModelElement]: Model elements.
+        """
+        model_elements = [
+            ModelElement("p", ElementTypes.VAR, "active power", bounds=[-1e6, 1e6]),
+            ModelElement("q", ElementTypes.VAR, "reactive power", bounds=[-1e6, 1e6]),
+            ModelElement("v", ElementTypes.VAR, "voltage magnitude", bounds=[0.9, 1.1]),
+            ModelElement("d", ElementTypes.VAR, "voltage angle", bounds=[-15, 15]),
+        ]
+        return model_elements
+
+    def __init__(self, name: str, config: dict = {}) -> Bus:
+        """
+        Bus.
+
+        Args:
+            name (str): Name of the Bus object.
+            config (dict, optional): Configuration for defined model elements. Defaults to {}.
+        """
+        super().__init__(name, config)
+
+    def _get_additional_constraints(self) -> List[ModelElement]:
+        """
+        Returns additional constraints on model variables.
+        By default only internal power balance constraints.
+
+        Returns:
+            List[ModelElement]: List of additional constraint elements.
+        """
+        return self._get_internal_power_balance_constraints()
 
     def _get_internal_power_balance_constraints(self) -> List[ModelElement]:
         """
@@ -978,90 +1113,8 @@ class Node(ControllableModelEntity):
 
         return [c_pb, c_qb]
 
-    def _get_dynamic_fcn(self) -> List[ModelElement]:
-        """
-        Returns constraints on all state variables representing how the states change between timesteps.
-
-        Returns:
-            List[ModelElement]: Generated constraints.
-        """
-        return []
-
-    def _get_additional_constraints(self) -> List[ModelElement]:
-        """
-        Returns additional constraints on model variables.
-        This is a utility to keep the _get_model_elements() method clean.
-
-        Returns:
-            List[ModelElement]: List of additional constraint elements.
-        """
-        return []
-
-    def _update_state(self):
-        """
-        Updates states by moving one timestep "forward", i.e., state[t] <- state[t+1]
-        """
-        for el in self.model_elements:
-            if el.type == ElementTypes.STATE:
-                # one timestep forward, i.e. state[t] <- state[t+1]
-                self.set_value(
-                    self.instance, el.name, self.get_value(self.instance, el.name)[1], idx=0, fix_value=True
-                )
-
-    def _update_data(self, at_time: datetime):
-        """
-        Reads data providers.
-        """
-        obs_dict = {}
-        for dp in self.data_providers:
-            obs_dict.update(dp.observe(at_time))
-
-        # update model
-        for el in self.model_elements:
-            if el.type == ElementTypes.DATA:
-                self.set_value(self.instance, el.name, obs_dict[el.name])
-
-    def _additional_updates(self) -> None:
-        """
-        Additional update actions can be defined here.
-        This could for example be the "true" dynamics of the system, or maniputations of parameters.
-        """
-
-
-class Bus(Node):
-
-    CLASS_INDEX = "n"
-
-    @classmethod
-    def _get_model_elements(cls) -> List[ModelElement]:
-        """
-        Returns primary model elements.
-        Busses specify active power (p), reactive power (q), voltage magnitude (v), and voltage angle (d).
-
-        Returns:
-            List[ModelElement]: Model elements.
-        """
-        model_elements = [
-            ModelElement("p", ElementTypes.VAR, "active power", bounds=[-1e6, 1e6]),
-            ModelElement("q", ElementTypes.VAR, "reactive power", bounds=[-1e6, 1e6]),
-            ModelElement("v", ElementTypes.VAR, "voltage magnitude", bounds=[0.9, 1.1]),
-            ModelElement("d", ElementTypes.VAR, "voltage angle", bounds=[-15, 15]),
-        ]
-        return model_elements
-
-    def __init__(self, name: str, config: dict = {}) -> Bus:
-        """
-        Bus.
-
-        Args:
-            name (str): Name of the Bus object.
-            config (dict, optional): Configuration for defined model elements. Defaults to {}.
-        """
-        super().__init__(name, config)
-
 
 class Component(Node):
-
     CLASS_INDEX = "x"
 
     @classmethod
@@ -1093,12 +1146,3 @@ class Component(Node):
             EntityError
         """
         raise EntityError(self, "Components cannot have sub-nodes")
-
-    def _get_internal_power_balance_constraints(self) -> List[ModelElement]:
-        """
-        Components do not have any internal balance constraint.
-
-        Returns:
-            List[ModelElement] = []
-        """
-        return []

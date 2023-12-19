@@ -2,34 +2,34 @@
 Runners to manage training/deployment in systems with both RL and non-RL controllers.
 """
 from __future__ import annotations
-import logging
-import random
 
+import os
+import random
+import time
 import warnings
+from collections import deque
+from datetime import datetime, timedelta
+from itertools import chain
+from typing import List, Tuple
 
 import gymnasium as gym
-from commonpower.core import System
-from pyomo.opt.solver import OptSolver
-from pyomo.opt import TerminationCondition
-from stable_baselines3.common.base_class import BasePolicy
-from stable_baselines3.common.utils import safe_mean
-from commonpower.utils.cp_exceptions import InstanceError
-from commonpower.utils.default_solver import get_default_solver
-from commonpower.control.controllers import RLBaseController, OptimalController
-from commonpower.control.controller_utils import ArgsWrapper, t2n
-from commonpower.control.logging.loggers import *
-from commonpower.control.environments import ControlEnv
-from datetime import datetime, timedelta
-from tqdm import tqdm
-from commonpower.modelling import ModelHistory
 import numpy as np
 import torch
+from pyomo.opt import TerminationCondition
+from pyomo.opt.solver import OptSolver
+from stable_baselines3.common.base_class import BasePolicy
+from stable_baselines3.common.utils import safe_mean
+from tqdm import tqdm
+
 import wandb
-import os
-import time
-from itertools import chain
-from collections import deque
-from typing import Tuple, List
+from commonpower.control.controller_utils import ArgsWrapper, t2n
+from commonpower.control.controllers import OptimalController, RLBaseController
+from commonpower.control.environments import ControlEnv
+from commonpower.control.logging.loggers import BaseLogger, TensorboardLogger
+from commonpower.core import System
+from commonpower.modelling import ModelHistory
+from commonpower.utils.cp_exceptions import InstanceError
+from commonpower.utils.default_solver import get_default_solver
 
 
 class BaseRunner:
@@ -37,14 +37,15 @@ class BaseRunner:
         self,
         sys: System,
         global_controller: OptimalController = OptimalController("global"),
-        horizon: int = 24,
+        forecast_horizon: int = 24,
+        control_horizon: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         fixed_day: datetime = None,
         history: ModelHistory = None,
         solver: OptSolver = get_default_solver(),
         seed: int = None,
-        normalize_actions: bool = True
+        normalize_actions: bool = True,
     ):
         """
         Base class for any runner for power system control with one or multiple agents. Initializes the system and its
@@ -56,7 +57,8 @@ class BaseRunner:
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using a market node
                 or a generator. Defaults to OptimalController("global").
-            horizon (int): number of control time steps
+            forecast_horizon (int): number of time steps that the controller looks into the future
+            control_horizon (int): number of control time steps to run if continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             fixed_day (datetime): whether to run on a fixed given day
@@ -79,7 +81,8 @@ class BaseRunner:
         # time handling
         self.start_time = None
         self.fixed_day = fixed_day
-        self.horizon = horizon
+        self.forecast_horizon = forecast_horizon
+        self.control_horizon = control_horizon
         self.dt = dt
         self.continuous_control = continuous_control
         # dummy controller to balance system
@@ -115,7 +118,11 @@ class BaseRunner:
         """
         # initialize system
         self.sys.initialize(
-            horizon=self.horizon, tau=self.dt, continuous_control=self.continuous_control, solver=self.solver
+            forecast_horizon=self.forecast_horizon,
+            control_horizon=self.control_horizon,
+            tau=self.dt,
+            continuous_control=self.continuous_control,
+            solver=self.solver,
         )
         # test whether system set-up is feasible
         self.system_feasible()
@@ -180,8 +187,6 @@ class BaseRunner:
                     inst, "Solving the model is infeasible or unbounded, please consider your system set-up"
                 )
 
-        logging.info("System feasibility check passed.")
-
 
 class BaseTrainer(BaseRunner):
     def __init__(
@@ -189,7 +194,8 @@ class BaseTrainer(BaseRunner):
         sys: System,
         global_controller: OptimalController = OptimalController("global"),
         wrapper: gym.Wrapper = None,
-        horizon: int = 24,
+        forecast_horizon: int = 24,
+        control_horizon: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         fixed_day: datetime = None,
@@ -210,7 +216,8 @@ class BaseTrainer(BaseRunner):
                 Defaults to OptimalController("global").
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
-            horizon (int): number of control time steps
+            forecast_horizon (int): number of time steps that the controller looks into the future
+            control_horizon (int): number of control time steps to run if continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             fixed_day (datetime): whether to run on a fixed given day
@@ -229,14 +236,15 @@ class BaseTrainer(BaseRunner):
         super().__init__(
             sys=sys,
             global_controller=global_controller,
-            horizon=horizon,
+            forecast_horizon=forecast_horizon,
+            control_horizon=control_horizon,
             dt=dt,
             continuous_control=continuous_control,
             fixed_day=fixed_day,
             history=history,
             solver=solver,
             seed=seed,
-            normalize_actions=normalize_actions
+            normalize_actions=normalize_actions,
         )
         # environment wrapper function
         self.wrapper = wrapper
@@ -266,7 +274,8 @@ class SingleAgentTrainer(BaseTrainer):
         policy: BasePolicy = None,
         wrapper: gym.Wrapper = None,
         logger: BaseLogger = None,
-        horizon: int = 24,
+        forecast_horizon: int = 24,
+        control_horizon: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         fixed_day: datetime = None,
@@ -289,7 +298,8 @@ class SingleAgentTrainer(BaseTrainer):
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             logger (BaseLogger): object for handling training logs
-            horizon (int): number of control time steps
+            forecast_horizon (int): number of time steps that the controller looks into the future
+            control_horizon (int): number of control time steps to run if continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             fixed_day (datetime): whether to run on a fixed given day
@@ -309,7 +319,8 @@ class SingleAgentTrainer(BaseTrainer):
             sys=sys,
             global_controller=global_controller,
             wrapper=wrapper,
-            horizon=horizon,
+            forecast_horizon=forecast_horizon,
+            control_horizon=control_horizon,
             dt=dt,
             continuous_control=continuous_control,
             fixed_day=fixed_day,
@@ -381,14 +392,15 @@ class DeploymentRunner(BaseRunner):
         global_controller: OptimalController = OptimalController("global"),
         alg_config: dict = None,
         wrapper: gym.Wrapper = None,
-        horizon: int = 24,
+        forecast_horizon: int = 24,
+        control_horizon: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         fixed_day: datetime = None,
         history: ModelHistory = None,
         solver: OptSolver = get_default_solver(),
         seed: int = None,
-        normalize_actions: bool = True
+        normalize_actions: bool = True,
     ):
         """
         Runner for the deployment of multiple heterogeneous controllers (RL, optimal control).
@@ -401,7 +413,8 @@ class DeploymentRunner(BaseRunner):
             alg_config (dict): configuration for the RL algorithm and policy to be trained
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
-            horizon (int): number of control time steps
+            forecast_horizon (int): number of time steps that the controller looks into the future
+            control_horizon (int): number of control time steps to run if continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             fixed_day (datetime): whether to run on a fixed given day
@@ -418,14 +431,15 @@ class DeploymentRunner(BaseRunner):
         super().__init__(
             sys=sys,
             global_controller=global_controller,
-            horizon=horizon,
+            forecast_horizon=forecast_horizon,
+            control_horizon=control_horizon,
             dt=dt,
             continuous_control=continuous_control,
             fixed_day=fixed_day,
             history=history,
             solver=solver,
             seed=seed,
-            normalize_actions=normalize_actions
+            normalize_actions=normalize_actions,
         )
         self.alg_config = alg_config
         self.wrapper = wrapper
@@ -482,7 +496,8 @@ class MAPPOTrainer(BaseTrainer):
         global_controller: OptimalController = OptimalController("global"),
         wrapper: gym.Wrapper = None,
         logger: BaseLogger = None,
-        horizon: int = 24,
+        forecast_horizon: int = 24,
+        control_horizon: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         fixed_day: datetime = None,
@@ -505,7 +520,8 @@ class MAPPOTrainer(BaseTrainer):
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             logger (BaseLogger): object for handling training logs
-            horizon (int): number of control time steps
+            forecast_horizon (int): number of time steps that the controller looks into the future
+            control_horizon (int): number of control time steps to run if continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             fixed_day (datetime): whether to run on a fixed given day
@@ -522,7 +538,8 @@ class MAPPOTrainer(BaseTrainer):
             sys=sys,
             global_controller=global_controller,
             wrapper=wrapper,
-            horizon=horizon,
+            forecast_horizon=forecast_horizon,
+            control_horizon=control_horizon,
             dt=dt,
             continuous_control=continuous_control,
             fixed_day=fixed_day,
@@ -552,9 +569,7 @@ class MAPPOTrainer(BaseTrainer):
         # MAPPO enables training with multiple envs in parallel, which we currently do not use,
         # but still keep to preserve compatibility
         self.envs = None
-        self.eval_envs = (
-            None  # MAPPO enables evaluating training regulary on separate environments - also not used atm
-        )
+        self.eval_envs = None  # MAPPO enables evaluating training regulary on separate environments - also not used atm
         self.policy = []  # list of policies for each agent
         self.trainer = []  # list of training algorithm objects for each agent
         self.buffer = []  # list of buffers for each agent
@@ -563,9 +578,9 @@ class MAPPOTrainer(BaseTrainer):
     def prepare_run(self):
         # import these here such that no errors will be thrown in case someone does not have the on-policy repo
         # installed
-        from onpolicy.envs.env_wrappers import DummyVecEnv, SubprocVecEnv
-        from onpolicy.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
         from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
+        from onpolicy.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
+        from onpolicy.envs.env_wrappers import DummyVecEnv, SubprocVecEnv
         from onpolicy.utils.separated_buffer import SeparatedReplayBuffer
 
         """
@@ -579,7 +594,12 @@ class MAPPOTrainer(BaseTrainer):
 
         """
         # initialize system
-        self.sys.initialize(horizon=self.horizon, tau=self.dt, continuous_control=self.continuous_control)
+        self.sys.initialize(
+            forecast_horizon=self.forecast_horizon,
+            control_horizon=self.control_horizon,
+            tau=self.dt,
+            continuous_control=self.continuous_control,
+        )
         # test whether system set-up is feasible
         self.system_feasible()
         # get controllers
@@ -731,7 +751,7 @@ class MAPPOTrainer(BaseTrainer):
                     #         if 'individual_reward' in infos[count][agent_id].keys():
                     #             idv_rews.append(infos[count][agent_id].get('individual_reward', 0))
                     # train_infos[agent_id].update({'individual_rewards': np.mean(idv_rews)})
-                    self.ep_info_buffer[agent_id].append(np.mean(self.buffer[agent_id].rewards) * self.horizon)
+                    self.ep_info_buffer[agent_id].append(np.mean(self.buffer[agent_id].rewards) * self.forecast_horizon)
                     train_infos[agent_id].update({"average_episode_rewards": safe_mean(self.ep_info_buffer[agent_id])})
 
                 self.log_train(train_infos, total_num_steps, start, end)
@@ -777,9 +797,7 @@ class MAPPOTrainer(BaseTrainer):
             self.buffer[agent_id].obs[0] = np.array(list(obs[:, agent_id])).copy()
 
     @torch.no_grad()
-    def collect(
-        self, step: int
-    ) -> Tuple[np.array, List[np.array], List[np.array], np.array, np.array, List[np.array]]:
+    def collect(self, step: int) -> Tuple[np.array, List[np.array], List[np.array], np.array, np.array, List[np.array]]:
         """
         Obtain actions for the current step based on current policies, observations, shared observations, and hidden
         states. The masks are not necessary in our case, because all agents terminate at the same time.
@@ -1095,17 +1113,17 @@ class MAPPOTrainer(BaseTrainer):
         """
         # we do not support training with vectorized environments atm
         if self.all_args.n_rollout_threads > 1:
-            raise ValueError("Parameter 'n_rollout_threads' has to equal '1' as we do not yet support training with "
-                             "multiple environments simultaneously!")
+            raise ValueError(
+                "Parameter 'n_rollout_threads' has to equal '1' as we do not yet support training with "
+                "multiple environments simultaneously!"
+            )
         if self.all_args.algorithm_name == "rmappo":
             print("You are choosing to use RMAPPO, we set use_recurrent_policy to be True")
             self.all_args.use_recurrent_policy = True
             self.all_args.use_naive_recurrent_policy = False
             self.all_args.use_centralized_V = True
         elif self.all_args.algorithm_name == "mappo":
-            print(
-                "You are choosing to use MAPPO, we set use_recurrent_policy & use_naive_recurrent_policy to be False"
-            )
+            print("You are choosing to use MAPPO, we set use_recurrent_policy & use_naive_recurrent_policy to be False")
             self.all_args.use_recurrent_policy = False
             self.all_args.use_naive_recurrent_policy = False
             self.all_args.use_centralized_V = True

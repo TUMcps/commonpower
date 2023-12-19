@@ -2,13 +2,15 @@
 Collection of callbacks for logging.
 """
 import os
-import wandb
-from wandb.sdk.lib import telemetry as wb_telemetry
-from wandb.integration.sb3 import WandbCallback
+from typing import Any, Dict, Literal, Optional
+
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import Logger
 from stable_baselines3.common.utils import safe_mean
-from typing import Dict, Optional, Any, Literal
+from wandb.integration.sb3 import WandbCallback
+from wandb.sdk.lib import telemetry as wb_telemetry
+
+import wandb
 
 
 class SafetyCallback(BaseCallback):
@@ -213,8 +215,7 @@ class MARLBaseCallback:
         ]
 
         mean_episode_rew_without_pen = [
-            safe_mean([ep_info["rew_without_penalty"] for ep_info in eps_history[i]])
-            for i in range(self.num_agents)
+            safe_mean([ep_info["rew_without_penalty"] for ep_info in eps_history[i]]) for i in range(self.num_agents)
         ]
         for agent_id in range(self.num_agents):
             agent_k = "agent%i/" % agent_id
