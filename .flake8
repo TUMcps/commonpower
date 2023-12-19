@@ -15,6 +15,6 @@ max-line-length=120
 # F403, F405 related to star imports
 # F821 undefined name
 # W503 line break before binary operator
-ignore=F403, F405, F821, W503
+ignore=E203, W503, F821, F403, F405
 per-file-ignores =
     */__init__.py: F401

@@ -2,19 +2,20 @@
 Funcionality to generate new or augment existing networks in a partially randomized way.
 """
 from __future__ import annotations
-from typing import Union, TypeVar
+
+from copy import deepcopy
+from typing import TypeVar, Union
+
 import numpy as np
 from numpy.random import rand
-from copy import deepcopy
 
-from commonpower.core import System, Bus, Component
-from commonpower.utils.param_initialization import *
+from commonpower.core import Bus, Component, System
+from commonpower.utils.param_initialization import ParamInitializer
 
 T = TypeVar("T")
 
 
 class Sampler:
-
     def __init__(self, sample_fcn: callable, **sample_fcn_kwargs):
         """
         Samplers provides a wrapper for a random sampling function (recommended: numpy.random).

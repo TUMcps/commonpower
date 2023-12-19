@@ -1,24 +1,26 @@
 """
 Collection of pre-defined controller types.
 """
-import numpy as np
 import warnings
+from collections import OrderedDict
 from copy import copy
+from typing import Callable, List, Tuple, Union
+
+import gymnasium as gym
+import numpy as np
+import pandas as pd
+import pyomo.environ as pyo
+import torch as th
+from pyomo.core import ConcreteModel, Objective, quicksum
+from pyomo.opt import TerminationCondition
+from pyomo.opt.solver import OptSolver
+from stable_baselines3.common.base_class import BasePolicy
+from stable_baselines3.common.utils import set_random_seed
+
 from commonpower.core import Node, System
 from commonpower.modelling import ControllableModelEntity, ElementTypes
 from commonpower.utils.cp_exceptions import EntityError, ControllerError
 from commonpower.utils.default_solver import get_default_solver
-from typing import List, Tuple, Union, Callable
-from pyomo.core import ConcreteModel, Objective, quicksum
-from pyomo.opt import TerminationCondition
-import pyomo.environ as pyo
-from pyomo.opt.solver import OptSolver
-from collections import OrderedDict
-import gymnasium as gym
-from stable_baselines3.common.base_class import BasePolicy
-from stable_baselines3.common.utils import set_random_seed
-import torch as th
-import pandas as pd
 
 
 class BaseController:
@@ -57,7 +59,6 @@ class BaseController:
         self.top_level_nodes = []
 
         self.history = {}
-        self.n_steps = None
 
         self.obs_mask = {}
         self.obs_types = obs_types
@@ -71,10 +72,10 @@ class BaseController:
         """
         Initial set-up of controller.
         """
+        self._index_entities()
         self.set_obs_mask(self.obs_types, self.global_obs_elements)
         self.top_level_nodes = self.get_top_level_nodes()
         self.input_space = self.get_input_space()
-        self.n_steps = self.top_level_nodes[0].horizon
 
     def reset_history(self) -> None:
         """
@@ -154,6 +155,14 @@ class BaseController:
 
         return clipped_action
 
+    def _index_entities(self):
+        """
+        Called during init to record the all entity ids.
+        We can do this only now because entity ids are assigned when they are added to the pyomo model.
+        """
+        for node in self.nodes:
+            self.node_ids.append(node.id)
+
     def add_system(self, system: System):
         """
         When adding a system to a controller, the system tree is searched recursively and all controllable entities
@@ -169,26 +178,14 @@ class BaseController:
         if system.controller is not None:
             raise EntityError(system, "System already has a global controller")
 
-        if not self.nodes:
-            system.register_controller(self)
-            self.nodes.append(system)
-            self.node_ids.append(system.id)
-        else:
-            # get level of existing nodes in controller and check that the new node is on the same level
-            level = min([len(nid.split(".")) for nid in self.node_ids])  # ToDo: update when we have proper levels
-            if len(system.id) == level:
-                system.register_controller(self)
-                self.nodes.append(system)
-                self.node_ids.append(system.id)
-            else:
-                raise ControllerError(self, "Can currently only add nodes on the same level to controller")
+        system.register_controller(self)
+        self.nodes.append(system)
 
         children = system.get_children()
         for child in children:
             if child.controller is None:
                 child.register_controller(self)
                 self.nodes.append(child)
-                self.node_ids.append(child.id)
 
         return self
 
@@ -210,21 +207,8 @@ class BaseController:
         if entity.controller is not None:
             warnings.warn(f"Node {entity.id} already has a controller")
 
-        if not self.nodes:
-            entity.register_controller(self)
-            self.nodes.append(entity)
-            self.node_ids.append(entity.id)
-
-        else:
-            # get level of existing nodes in controller and check that the new node is on the same level
-            # len(min(self.node_ids, key=len))  # ToDo: update when we have proper levels
-            level = min([len(nid.split(".")) for nid in self.node_ids])
-            if len(entity.id.split(".")) == level:
-                entity.register_controller(self)
-                self.nodes.append(entity)
-                self.node_ids.append(entity.id)
-            else:
-                raise ControllerError(self, "Can currently only add nodes on the same level to controller")
+        entity.register_controller(self)
+        self.nodes.append(entity)
 
         children = entity.get_children()
         for child in children:
@@ -232,7 +216,6 @@ class BaseController:
                 warnings.warn(f"Node {child.id} already has a controller!")
             child.register_controller(self)
             self.nodes.append(child)
-            self.node_ids.append(child.id)
 
         return self
 
@@ -248,14 +231,35 @@ class BaseController:
 
     def get_top_level_nodes(self) -> List[ControllableModelEntity]:
         """
-        Retrieve the controlled entities at the highest level in the tree
+        Retrieve the controlled entities at the highest level in the tree.
 
         Returns:
-            List[ControllableModelEntity]: highest-level entities under control
+            List[ControllableModelEntity]: Highest-level entities under control.
 
         """
-        shortest_node_id = len(min(self.node_ids, key=len))
-        top_level_nodes = [node for node in self.nodes if len(node.id) == shortest_node_id]
+
+        def get_entity_level(entity_id: str) -> int:
+            if entity_id.split(".") == [""]:
+                return 0  # root node (sys)
+            else:
+                return len(entity_id.split("."))
+
+        def get_top_level_node(entity_id: str, top_level: int) -> str:
+            top_level_node = ".".join(entity_id.split(".")[:top_level])
+            return top_level_node
+
+        shortest_node_id = min([get_entity_level(nid) for nid in self.node_ids])
+        top_level_nodes = [node for node in self.nodes if get_entity_level(node.id) == shortest_node_id]
+        # check that the controlled subsystem does not have a disconnected structure
+        if shortest_node_id > 0:
+            required_top_level_nodes = [get_top_level_node(nid, shortest_node_id) for nid in self.node_ids]
+            top_level_node_ids = [n.id for n in top_level_nodes]
+            if not all([nid in top_level_node_ids for nid in required_top_level_nodes]):
+                raise ControllerError(
+                    self,
+                    "Tree of controlled subsystem is disconnected. You have added model entities to the "
+                    "controller that are not on the same level."
+                )
         return top_level_nodes
 
     def get_id(self) -> str:
@@ -287,7 +291,7 @@ class BaseController:
         ctrl_cost = sum(cost_values)
 
         if self.cost_callback:
-            ctrl_cost += self.cost_callback(ctrl=self)
+            ctrl_cost += self.cost_callback(ctrl=self, sys_inst=sys_inst)
         return ctrl_cost
 
     def set_obs_mask(
@@ -366,7 +370,7 @@ class BaseController:
         for n_id, n_act in dummy_action.items():
             for el_id, el_act in n_act.items():
                 num_act = el_act.shape[0]
-                dummy_action[n_id][el_id] = action[act_count: act_count + num_act]
+                dummy_action[n_id][el_id] = action[act_count : act_count + num_act]
                 act_count = act_count + num_act
         return dummy_action
 
@@ -383,7 +387,13 @@ class BaseController:
 
 
 class OptimalController(BaseController):
-    def __init__(self, name: str, cost_callback: Callable = None, solver: OptSolver = get_default_solver()):
+    def __init__(
+        self,
+        name: str,
+        cost_callback: Callable = None,
+        solver: OptSolver = get_default_solver(),
+        control_horizon: int = 1,
+    ):
         """
         Optimal controller that solves a constrained optimization problem to find the control inputs which minimize
         the cost function of all its controlled entities while satisfying their constraints.
@@ -402,6 +412,8 @@ class OptimalController(BaseController):
         self.sys_inst = None
         self.model = None
         self.solver = solver
+
+        self.control_horizon = control_horizon  # only one time step for optimal control
 
     def reset_history(self) -> None:
         """
@@ -467,7 +479,8 @@ class OptimalController(BaseController):
             node_action = node.get_inputs(self.model)
             if node_action is not None:
                 node_actions[node.id] = {
-                    el_id: np.array([el_action[0]]) for el_id, el_action in node_action.items()
+                    el_id: np.array(el_action[: self.control_horizon])
+                    for el_id, el_action in node_action.items()  # TODO: We can generalize this to multiple time steps
                 }  # only get first input element to apply to system
 
         # clip actions to bounds to account for numerical errors
@@ -846,9 +859,7 @@ class RLControllerMA(RLBaseController):
             self.policy_kwargs.use_naive_recurrent_policy = False
             self.policy_kwargs.use_centralized_V = True
         elif self.policy_kwargs.algorithm_name == "mappo":
-            print(
-                "You are choosing to use MAPPO, we set use_recurrent_policy & use_naive_recurrent_policy to be False"
-            )
+            print("You are choosing to use MAPPO, we set use_recurrent_policy & use_naive_recurrent_policy to be False")
             self.policy_kwargs.use_recurrent_policy = False
             self.policy_kwargs.use_naive_recurrent_policy = False
             self.policy_kwargs.use_centralized_V = True

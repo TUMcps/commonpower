@@ -2,25 +2,29 @@
 Collection of power flow models.
 """
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+
+from typing import TYPE_CHECKING, List
+
 from pyomo.core import ConcreteModel, Constraint, quicksum
 
 from commonpower.core import PowerFlowModel
 
 if TYPE_CHECKING:
-    from commonpower.core import Line, Node
+    from commonpower.core import Bus, Line
 
 
 class PowerBalanceModel(PowerFlowModel):
     """
     Models pure power balance accross the system.
     """
-    def _set_sys_constraints(self, model: ConcreteModel, nodes: List[Node], lines: List[Line]) -> None:
+
+    def _set_sys_constraints(self, model: ConcreteModel, nodes: List[Bus], lines: List[Line]) -> None:
         """
         .. math::
             \\sum_i p_i = 0 \\\\
             \\sum_i q_i = 0
         """
+
         def pb_sys_p(model, t):
             return quicksum([n.get_pyomo_element("p", model)[t] for n in nodes]) == 0.0
 
@@ -37,12 +41,13 @@ class DCPowerFlowModel(PowerFlowModel):
     Based on https://www.mech.kuleuven.be/en/tme/research/energy_environment/Pdf/wpen2014-12.pdf.
     """
 
-    def _set_sys_constraints(self, model: ConcreteModel, nodes: List[Node], lines: List[Line]) -> None:
+    def _set_sys_constraints(self, model: ConcreteModel, nodes: List[Bus], lines: List[Line]) -> None:
         """
         .. math::
             \\sum_i p_i = 0 \\\\
             \\sum_i q_i = 0
         """
+
         def pb_sys_p(model, t):
             return quicksum([n.get_pyomo_element("p", model)[t] for n in nodes]) == 0.0
 
@@ -52,7 +57,7 @@ class DCPowerFlowModel(PowerFlowModel):
         model.sys_pb_p = Constraint(model.t, expr=pb_sys_p, doc="global active power balance")
         model.sys_pb_q = Constraint(model.t, expr=pb_sys_q, doc="global reactive power balance")
 
-    def _set_bus_constraint(self, model: ConcreteModel, nid: int, node: Node, connected_lines: list[Line]):
+    def _set_bus_constraint(self, model: ConcreteModel, nid: int, node: Bus, connected_lines: list[Line]):
         """
         Set DC bus constraints and voltage angle of first bus fixed at zero.
 
@@ -98,6 +103,7 @@ class DCPowerFlowModel(PowerFlowModel):
 
         The system is then factually constrained by the bounds on I_l.
         """
+
         def dcpf(model, t):
             return line.get_pyomo_element("p", model)[t] == line.get_pyomo_element("B", model) * (
                 line.src.get_pyomo_element("d", model)[t] - line.dst.get_pyomo_element("d", model)[t]

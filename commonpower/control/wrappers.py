@@ -1,10 +1,11 @@
 """
 Wrappers to adjust API in environments.py to different RL training algorithms.
 """
+from collections import deque
+from typing import List, Tuple
+
 import gymnasium as gym
 import numpy as np
-from typing import Tuple, List
-from collections import deque
 
 
 def ctrl_dict_to_list(input_dict: dict) -> list:
@@ -133,7 +134,7 @@ class SingleAgentWrapper(gym.Wrapper):
         for n_id, n_act in dummy_action[self.ctrl_id].items():
             for el_id, el_act in n_act.items():
                 num_act = el_act.shape[0]
-                dummy_action[self.ctrl_id][n_id][el_id] = action[act_count: act_count + num_act]
+                dummy_action[self.ctrl_id][n_id][el_id] = action[act_count : act_count + num_act]
                 act_count = act_count + num_act
 
         obs, reward, terminated, truncated, info = self.env.step(dummy_action)
@@ -197,8 +198,8 @@ class MultiAgentWrapper(gym.Wrapper):
         n_obs = 0
         for agent_obs in self.observation_space:
             n_agent_obs = len(agent_obs.low)
-            share_low[n_obs: n_obs + n_agent_obs] = agent_obs.low
-            share_high[n_obs: n_obs + n_agent_obs] = agent_obs.high
+            share_low[n_obs : n_obs + n_agent_obs] = agent_obs.low
+            share_high[n_obs : n_obs + n_agent_obs] = agent_obs.high
             n_obs = n_obs + n_agent_obs
         self.share_observation_space = [gym.spaces.Box(low=share_low, high=share_high) for _ in range(self.n_agents)]
 
@@ -256,7 +257,7 @@ class MultiAgentWrapper(gym.Wrapper):
             for n_id, n_act in dummy_action.items():
                 for el_id, el_act in n_act.items():
                     num_act = el_act.shape[0]
-                    dummy_action[n_id][el_id] = actions[act_count: act_count + num_act]
+                    dummy_action[n_id][el_id] = actions[act_count : act_count + num_act]
                     act_count = act_count + num_act
         # step original ControlEnv with the transformed action_dict
         obs, rewards, terminated, truncated, info = self.env.step(action_dict)

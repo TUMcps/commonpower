@@ -2,63 +2,28 @@
 Collection of data sources.
 """
 from __future__ import annotations
+
+from datetime import datetime, timedelta
 from typing import List
-import pandas as pd
 
 import numpy as np
-from datetime import datetime, timedelta
+import pandas as pd
 
 from commonpower.data_forecasting.base import DataSource
 
 
-class CSVDataSource(DataSource):
-    def __init__(
-        self,
-        file_path: str,
-        datetime_format: str = "%d.%m.%Y %H:%M",
-        rename_dict: dict = {},
-        auto_drop: bool = False,
-        resample: timedelta = timedelta(hours=1),
-        **csv_read_kwargs,
-    ) -> DataSource:
+class PandasDataSource(DataSource):
+    def __init__(self, data: pd.DataFrame, frequency: timedelta = timedelta(hours=1)):
         """
-        DataSource based on .csv data.
-        It imports from a .csv file, does some preprocessing and stores it in an internal data frame.
+        Data source based on a pandas dataframe.
 
         Args:
-            file_path (str): Path to the source .csv file.
-            datetime_format (_type_, optional): Datetime format the source .csv file.
-                Specifically, this refers to the (required) column "t". Defaults to "%d.%m.%Y %H:%M".
-            rename_dict (dict, optional): Dict to specify column renaming. Format: {"original name": "new name", ...}.
-                Defaults to {}.
-            auto_drop (bool, optional): If set to true, all columns of the source data except those mentioned in
-                rename_dict will be dropped. Defaults to False.
-            resample (timedelta, optional): Resamples the source data to this value. If the time interval of
-                the source data is larger than the resample value, the data is interpolated linearly.
-                Defaults to timedelta(hours=1).
+            data (pd.DataFrame): Dataframe containing the data.
+                The index needs to be a datetime index.
+            frequency (timedelta, optional): Frequency of the data. Defaults to timedelta(hours=1).
         """
-
-        self.data = pd.read_csv(file_path, **csv_read_kwargs).rename(columns=rename_dict)
-        self.datetime_format = datetime_format
-
-        assert "t" in self.data.columns, (
-            "The data needs a time column called 't'. Alternatively, you can specify the name of the time column in"
-            " the rename_dict"
-        )
-        assert not self.data.isnull().any().any(), "There were NaN entries in the data"
-
-        if auto_drop is True:
-            # automatically drop all columns that were not mentioned in rename_dict
-            self.data.drop(self.data.columns.difference([col for col in rename_dict.values()]), axis=1, inplace=True)
-
-        # make time column the index
-        self.data.t = self.data.t.apply(lambda x: datetime.strptime(x, datetime_format))
-        self.data.set_index("t", inplace=True, verify_integrity=True)
-
-        # resample data
-        self.data = self.data.resample(resample).interpolate("time")
-
-        super().__init__(frequency=resample)
+        self.frequency = frequency
+        self.data = data
 
     def get_date_range(self) -> List[datetime]:
         return [self.data.index[0].to_pydatetime(), self.data.index[-1].to_pydatetime()]
@@ -103,6 +68,55 @@ class CSVDataSource(DataSource):
 
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         return self.data.loc[from_time:to_time].to_numpy()
+
+
+class CSVDataSource(PandasDataSource):
+    def __init__(
+        self,
+        file_path: str,
+        datetime_format: str = "%d.%m.%Y %H:%M",
+        rename_dict: dict = {},
+        auto_drop: bool = False,
+        resample: timedelta = timedelta(hours=1),
+        **csv_read_kwargs,
+    ) -> CSVDataSource:
+        """
+        DataSource based on .csv data.
+        It imports from a .csv file, does some preprocessing and stores it in an internal pandas data frame.
+
+        Args:
+            file_path (str): Path to the source .csv file.
+            datetime_format (_type_, optional): Datetime format the source .csv file.
+                Specifically, this refers to the (required) column "t". Defaults to "%d.%m.%Y %H:%M".
+            rename_dict (dict, optional): Dict to specify column renaming. Format: {"original name": "new name", ...}.
+                Defaults to {}.
+            auto_drop (bool, optional): If set to true, all columns of the source data except those mentioned in
+                rename_dict will be dropped. Defaults to False.
+            resample (timedelta, optional): Resamples the source data to this value. If the time interval of
+                the source data is larger than the resample value, the data is interpolated linearly.
+                Defaults to timedelta(hours=1).
+        """
+        self.frequency = resample
+
+        self.data = pd.read_csv(file_path, **csv_read_kwargs).rename(columns=rename_dict)
+        self.datetime_format = datetime_format
+
+        assert "t" in self.data.columns, (
+            "The data needs a time column called 't'. Alternatively, you can specify the name of the time column in"
+            " the rename_dict"
+        )
+        assert not self.data.isnull().any().any(), "There were NaN entries in the data"
+
+        if auto_drop is True:
+            # automatically drop all columns that were not mentioned in rename_dict
+            self.data.drop(self.data.columns.difference([col for col in rename_dict.values()]), axis=1, inplace=True)
+
+        # make time column the index
+        self.data.t = self.data.t.apply(lambda x: datetime.strptime(x, datetime_format))
+        self.data.set_index("t", inplace=True, verify_integrity=True)
+
+        # resample data
+        self.data = self.data.resample(resample).interpolate("time")
 
 
 class ConstantDataSource(DataSource):

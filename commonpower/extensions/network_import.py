@@ -2,19 +2,19 @@
 Funcionality to import exisint topologies from other libraries/tools.
 """
 from __future__ import annotations
+
 from typing import Union
 
+from pandapower.auxiliary import pandapowerNet
 
 from commonpower.core import *
+from commonpower.extensions.factories import Factory
+from commonpower.modelling import *
+from commonpower.models.busses import *
 from commonpower.models.components import *
 from commonpower.models.lines import *
-from commonpower.models.busses import *
 from commonpower.models.powerflow import *
 from commonpower.utils.param_initialization import *
-from commonpower.modelling import *
-from commonpower.extensions.factories import Factory
-
-from pandapower.auxiliary import pandapowerNet
 
 
 class PandaPowerImporter:
@@ -40,8 +40,9 @@ class PandaPowerImporter:
                 {
                     "I": lambda x: (-x["max_i_ka"], x["max_i_ka"]),
                     # Multiply with standard distribution net voltage (400V) to get power limits (in kW)
+                    # We apply a factor 10 to have more flexibility for power demands.
                     # TODO: pull this from the voltage level of connected busses.
-                    "p": lambda x: (-x["max_i_ka"] * 0.4 * 1e3, x["max_i_ka"] * 0.4 * 1e3),
+                    "p": lambda x: (-x["max_i_ka"] * 0.4 * 1e4, x["max_i_ka"] * 0.4 * 1e4),
                     "G": lambda x: 1 / (x["r_ohm_per_km"] * x["length_km"]),
                     "B": lambda x: 1 / (x["x_ohm_per_km"] * x["length_km"]),
                 },

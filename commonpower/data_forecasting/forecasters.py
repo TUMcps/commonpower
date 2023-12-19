@@ -2,9 +2,11 @@
 Collection of forecasters.
 """
 from __future__ import annotations
-from typing import Union
-import numpy as np
+
 from datetime import timedelta
+from typing import Union
+
+import numpy as np
 
 from commonpower.data_forecasting.base import Forecaster
 
@@ -25,19 +27,25 @@ class ConstantForecaster(Forecaster):
 
 
 class PersistenceForecaster(Forecaster):
-    def __init__(self, frequency: timedelta(hours=1), horizon: timedelta = timedelta(hours=24)):
+    def __init__(
+        self,
+        frequency: timedelta(hours=1),
+        horizon: timedelta = timedelta(hours=24),
+        look_back: timedelta = timedelta(hours=24),
+    ):
         """
-        This forecaster predicts all future timesteps with the value 24h before, i.e.,
-        every value is predicted as the value at time t-24h.
+        This forecaster predicts all future timesteps with the value look_back before, i.e.,
+        every value is predicted as the value at time t-look_back.
 
         Args:
             frequency (timedelta, optional): Frequency of generated forecasts. Defaults to timedelta(hours=1).
             horizon (timedelta, optional): Horizon to generate forecasts for. Defaults to timedelta(hours=24).
+            look_back (timedelta, optional): Look back time to use for predictions. Defaults to timedelta(hours=24).
         """
-        super().__init__(frequency, horizon, timedelta(hours=24))
+        super().__init__(frequency, horizon, look_back)
 
     def __call__(self, data: np.ndarray) -> np.ndarray:
-        return data[1: int(self.horizon / self.frequency) + 1, :]
+        return data[1 : int(self.horizon / self.frequency) + 1, :]
 
 
 class LookBackForecaster(Forecaster):
@@ -80,7 +88,7 @@ class NoisyForecaster(Forecaster):
         self,
         frequency: timedelta(hours=1),
         horizon: timedelta = timedelta(hours=24),
-        noise_bounds: Union[float, list[float]] = [-0.1, 0.1]
+        noise_bounds: Union[float, list[float]] = [-0.1, 0.1],
     ):
         """
         This forecaster knows the true future values but applies a uniformly random noise to it.

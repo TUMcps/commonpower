@@ -2,9 +2,17 @@
 Collection of loggers for controller performance.
 """
 from typing import Callable
-from commonpower.control.logging.callbacks import *
-import wandb
+
 from stable_baselines3.common.logger import Logger, make_output_format
+
+import wandb
+from commonpower.control.logging.callbacks import (
+    BaseCallback,
+    MARLBaseCallback,
+    MARLWandBCallback,
+    SafetyCallback,
+    WandBSafetyCallback,
+)
 
 
 class BaseLogger:
