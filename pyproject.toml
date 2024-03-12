@@ -1,0 +1,64 @@
+[project]
+name = "commonpower"
+version = "0.1.0"
+authors = [
+  { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
+  { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
+]
+description = "A package for the exploration of safe single/multi-agent reinforcement learning in smart grids."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+keywords = [
+  "Power System",
+  "Smart Grid",
+  "Control",
+  "Safety",
+  "Simulation",
+  "Reinforcement learning",
+  "Mutli-Agent Systems"
+]
+
+dependencies = [
+  "wandb",
+  "tensorboard",
+  "matplotlib",
+  "gurobipy",
+  "pyomo",
+  "randomtimestamp",
+  "prettytable",
+  "stable-baselines3",
+  "pandapower",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+ci = ["pytest", "pandapower"]
+full = ["jupyter", "pandapower"]
+docs = [
+  "myst_parser", 
+  "sphinx_autodoc_typehints", 
+  "nbsphinx", 
+  "sphinx_rtd_theme", 
+  "sphinx_autorun"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/TUMcps/commonpower"
+"Documentation" = "https://commonpower.readthedocs.io"
+
+# Formatting
+[tool.black]
+line-length = 120
+target-version = ["py38", "py39", "py310", "py311"]
+skip-string-normalization = true
+
+[tool.isort]
+profile = "black"
+line_length = 120

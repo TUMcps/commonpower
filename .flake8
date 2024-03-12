@@ -1,0 +1,20 @@
+[flake8]
+# ignore defaults to E121,E123,E126,E226,E24,E704,W503,W504 -- we are more strict
+# W503: Line breaks should be before binary operators (either W503 or W504 have to be ignored)
+# E704: Allow multiple statements per line to enable inline function definitions
+#ignore=W503, E704
+
+# F821 - (undefined names) as they are used for type hints
+# F401, F403 - init may contain unused import (401) and imports using * (403)
+# F841: In unittests, assigning values to unused variables (841) can support readability
+#per-file-ignores=
+exclude=
+    docs/*
+    tests/*
+max-line-length=120
+# F403, F405 related to star imports
+# F821 undefined name
+# W503 line break before binary operator
+ignore=E203, W503, F821, F403, F405
+per-file-ignores =
+    */__init__.py: F401

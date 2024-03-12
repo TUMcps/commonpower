@@ -1,0 +1,143 @@
+image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.10
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  GIT_SUBMODULE_STRATEGY: recursive
+  GIT_SUBMODULE_UPDATE_FLAGS: --remote
+  SECURE_FILES_DOWNLOAD_PATH: '.'
+  GRB_LICENSE_FILE: "gurobi.lic"
+
+#include:
+#   - template: Code-Quality.gitlab-ci.yml
+
+cache:
+  paths:
+    - .cache/pip
+    - public  # Keep changes on gitlab pages; overwrite parts with artifacts from different jobs. ! protected branches
+              # have own, separate cache by default
+
+workflow:
+  # Run the pipeline as branch pipeline when no merge request is open or as merge pipeline when a merge request is open, but not both
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+
+before_script:
+    - pip install --upgrade pip 
+    - echo "Fetching Gurobi license"
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+
+stages:
+  - static_check
+  - test
+  - extended_test
+  - deploy
+
+#docstring check:
+#  stage: static_check
+#  script:
+#    - pip install pydocstyle
+#    - cd src/timor && pydocstyle --config=../../.pydocstyle
+
+flake8 linting:
+  stage: static_check
+  allow_failure: false
+  script:
+    - python --version
+    - pip --version
+    - pip install flake8
+    - flake8
+
+# the extra work is for the MARL test (installation of onpolicy library)
+test:
+  stage: test
+  script:
+    - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
+    - pip install pytest pytest-cov
+    - git clone https://github.com/TUMcps/on-policy.git
+    - cd on-policy
+    - pip install -e .
+    - cd ..
+    - pip install -e .[ci]
+    - pytest --cov=commonpower --cov-report term --cov-report xml:coverage.xml tests/
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+pip_py_38:
+  stage: extended_test
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.8
+  script:
+    - git clone https://github.com/TUMcps/on-policy.git
+    - cd on-policy
+    - pip install -e .
+    - cd ..
+    - pip install .[ci]
+    - python -m pytest
+  rules:
+    - changes:
+      - .gitlab-ci.yml
+      - pyproject.toml
+    - if: $CI_COMMIT_BRANCH == "PUBLIC"
+
+pip_py_39:
+  stage: extended_test
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.9
+  script:
+    - git clone https://github.com/TUMcps/on-policy.git
+    - cd on-policy
+    - pip install -e .
+    - cd ..
+    - pip install .[ci]
+    - python -m pytest
+  rules:
+    - changes:
+      - .gitlab-ci.yml
+      - pyproject.toml
+    - if: $CI_COMMIT_BRANCH == "PUBLIC"
+
+pip_py_310:
+  stage: extended_test
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.10
+  script:
+    - git clone https://github.com/TUMcps/on-policy.git
+    - cd on-policy
+    - pip install -e .
+    - cd ..
+    - pip install .[ci]
+    - python -m pytest
+  rules:
+    - changes:
+      - .gitlab-ci.yml
+      - pyproject.toml
+    - if: $CI_COMMIT_BRANCH == "PUBLIC"
+
+pip_py_311:
+  stage: extended_test
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.11
+  script:
+    - git clone https://github.com/TUMcps/on-policy.git
+    - cd on-policy
+    - pip install -e .
+    - cd ..
+    - pip install .[ci]
+    - python -m pytest
+  rules:
+    - changes:
+      - .gitlab-ci.yml
+      - pyproject.toml
+    - if: $CI_COMMIT_BRANCH == "PUBLIC"
+
+upload_to_pypi:
+  stage: deploy
+  script:
+    - pip install build twine
+    - python -m build
+    - TWINE_PASSWORD=${PYPI_TOKEN} TWINE_USERNAME=__token__ python -m twine upload dist/*
+  rules:
+    - if: $CI_COMMIT_BRANCH == "PUBLIC"
