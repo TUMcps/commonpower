@@ -1105,6 +1105,20 @@ class Bus(Node):
         """
         super().__init__(name, config)
 
+        self.stand_alone = True  # indicates if the bus is child of a StructureNode (energy community, P2P market)
+
+    def set_as_structure_member(self) -> None:
+        """
+        Sets a flag indicating that the bus is a member of some structure (e.g., energy community, P2P market).
+        """
+        self.stand_alone = False
+
+    def set_as_stand_alone(self) -> None:
+        """
+        Sets a flag indicating that the bus is stand-alone.
+        """
+        self.stand_alone = True
+
     def _get_additional_constraints(self) -> List[ModelElement]:
         """
         Returns additional constraints on model variables.

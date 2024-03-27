@@ -58,22 +58,6 @@ class RTPricedBus(Bus):
 
         return model_elements
 
-    def __init__(self, name: str, config: dict = {}) -> None:
-        super().__init__(name, config)
-        self.stand_alone = True  # indicates if the bus is child of a StructureNode (energy community, P2P market)
-
-    def set_as_structure_member(self) -> None:
-        """
-        Sets a flag indicating that the bus is a member of some structure (e.g., energy community, P2P market).
-        """
-        self.stand_alone = False
-
-    def set_as_stand_alone(self) -> None:
-        """
-        Sets a flag indicating that the bus is stand-alone.
-        """
-        self.stand_alone = True
-
     def _get_additional_constraints(self) -> List[ModelElement]:
         """
         Sets a binary buying indicator. \\
@@ -150,9 +134,12 @@ class RTPricedBusLinear(Bus):
             cost = \\sum_{i \\in components} cost_i + p * psi
         """
         if self.nodes:
-            return quicksum([n.cost_fcn(model, t) for n in self.nodes]) + (
-                self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau
-            )
+            if self.stand_alone:
+                return quicksum([n.cost_fcn(model, t) for n in self.nodes]) + (
+                    self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau
+                )
+            else:
+                return quicksum([n.cost_fcn(model, t) for n in self.nodes])
         else:
             return 0.0
 
