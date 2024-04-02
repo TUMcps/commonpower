@@ -136,7 +136,13 @@ class TestControl(unittest.TestCase):
         sys.pprint()
 
         # algorithm configuration
-        config = {'algorithm_name': 'ippo'}
+        config = {
+            'algorithm_name': 'mappo',
+            'seed': 1,
+            'num_env_steps': 1 * int(horizon.total_seconds() // 3600),
+            'episode_length': 1 * int(horizon.total_seconds() // 3600),
+            'penalty_factor': 2.0,
+        }
         all_args_dict = MAPPOBaseConfig(**config)
 
         # add controllers
