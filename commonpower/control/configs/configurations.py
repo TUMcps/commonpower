@@ -11,7 +11,7 @@ class SB3AlgorithmBaseConfig(BaseModel):
 
 class SB3PPOConfig(SB3AlgorithmBaseConfig):
     n_steps: int = 24
-    use_sde: bool = False
+    use_sde: bool = True
     ent_coef: float = 0.0
     max_grad_norm: float = 0.9
     normalize_advantage: bool = True
