@@ -22,7 +22,7 @@ from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
-from commonpower.control.controller_utils import ArgsWrapper, t2n
+from commonpower.control.controller_utils import t2n
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
 from commonpower.control.logging.loggers import BaseLogger, TensorboardLogger
@@ -345,7 +345,7 @@ class SingleAgentTrainer(BaseTrainer):
 
         """
         self.prepare_run()
-        training_steps = self.alg_config["total_steps"]
+        training_steps = self.alg_config.total_steps
         self.policy.learn(total_timesteps=training_steps, callback=self.logger.log_function())
         # store reference to model in controller
         for ctrl in self.sys.get_controllers(ctrl_types=[RLBaseController]).values():
@@ -364,18 +364,14 @@ class SingleAgentTrainer(BaseTrainer):
 
         """
         super().prepare_run()
-        TrainAlg = self.alg_config["algorithm"]
+        TrainAlg = self.alg_config.algorithm
         if not self.policy:
             self.policy = TrainAlg(
                 env=self.env,
-                policy=self.alg_config["policy"],
-                learning_rate=self.alg_config["learning_rate"],
-                device=self.alg_config["device"],
-                n_steps=self.alg_config["n_steps"],
-                batch_size=self.alg_config["batch_size"],
                 tensorboard_log=self.logger.get_log_dir(),
                 seed=self.seed,
                 verbose=2,
+                **self.alg_config.algorithm_config.dict()  # convert pydantic Model to dictionary
             )
 
     def finish_run(self):
@@ -480,7 +476,7 @@ class DeploymentRunner(BaseRunner):
             for rl_ctrl in self.rl_controllers.values():
                 rl_ctrl.set_mode("deploy")
                 # load RL policies
-                self.alg_config["seed"] = self.seed  # need to hand over the seed to re-load the policy
+                self.alg_config.seed = self.seed  # need to hand over the seed to re-load the policy
                 if not rl_ctrl.policy:
                     rl_ctrl.load(env=self.env, config=self.alg_config)
 
@@ -550,7 +546,7 @@ class MAPPOTrainer(BaseTrainer):
         self.log_function = logger.get_log_function()
 
         all_args = alg_config
-        self.all_args = ArgsWrapper(all_args)
+        self.all_args = all_args
         # set device
         self._set_device()
         # check other arguments according to algorithm:
@@ -1146,8 +1142,6 @@ class MAPPOTrainer(BaseTrainer):
         self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads
         self.use_linear_lr_decay = self.all_args.use_linear_lr_decay
         self.hidden_size = self.all_args.hidden_size
-        self.use_wandb = self.all_args.use_wandb
-        self.use_render = self.all_args.use_render
         self.recurrent_N = self.all_args.recurrent_N
 
         # interval
