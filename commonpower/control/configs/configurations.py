@@ -1,5 +1,4 @@
 from pydantic import BaseModel, ConfigDict
-from stable_baselines3.common.base_class import BaseAlgorithm
 from abc import ABCMeta
 
 
@@ -39,14 +38,14 @@ class SB3BaseConfig(BaseModel):
 
 
 class MAPPOBaseConfig(BaseModel):
-    algorithm_name: str = "mappo"
-    seed: int = 1
+    algorithm_name: str
+    seed: int
+    num_env_steps: int
     cuda: bool = False
     cuda_deterministic: bool = True
     n_training_threads: int = 1
     n_rollout_threads: int = 1
     n_eval_rollout_threads: int = 1
-    num_env_steps: int = 24
     episode_length: int = 24
     share_policy: bool = False
     use_centralized_V: bool = True
