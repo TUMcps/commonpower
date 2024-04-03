@@ -739,21 +739,15 @@ class RLControllerSB3(RLBaseController):
                 "No load path for pre-trained policy! Needs to be handed over in constructor (pretrained_policy_path)"
             )
         # has to be implemented by subclasses
-        TrainAlg = config["algorithm"]
+        TrainAlg = config.algorithm
         self.policy = TrainAlg(
             env=env,
-            policy=config["policy"],
-            device=config["device"],
-            n_steps=config["n_steps"],
-            normalize_advantage=False,
-            learning_rate=config["learning_rate"],
-            batch_size=config["batch_size"],
-            seed=config["seed"],
-            policy_kwargs=policy_kwargs,
+            seed=config.seed,
+            **config.algorithm_config.model_dump()  # pydantic Model to dictionary
         )
         self.policy = self.policy.load(self.load_path)
         # ugly hack to overwrite the seed in in self.policy.load (which will be done with the seed used during training)
-        set_random_seed(seed=config["seed"])
+        set_random_seed(seed=config.seed)
 
     def predict_action(self, obs: np.ndarray, deterministic: bool = True) -> np.ndarray:
         """
@@ -833,9 +827,6 @@ class RLControllerMA(RLBaseController):
             None
 
         """
-        from commonpower.control.controller_utils import ArgsWrapper
-
-        config = ArgsWrapper(config)
         self.policy_kwargs = config
         self._check_alg_config()
         share_observation_space = (

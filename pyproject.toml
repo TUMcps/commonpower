@@ -36,6 +36,7 @@ dependencies = [
   "stable-baselines3",
   "pandapower",
   "tqdm",
+  "pydantic",
 ]
 
 [project.optional-dependencies]
