@@ -21,7 +21,7 @@ from commonpower.data_forecasting.base import DataProvider
 from commonpower.modelling import ModelHistory
 from commonpower.control.logging.loggers import TensorboardLogger
 from commonpower.control.logging.callbacks import *
-from commonpower.control.configs.configurations import *
+from commonpower.control.configs.algorithms import *
 
 
 class TestControl(unittest.TestCase):
@@ -101,13 +101,7 @@ class TestControl(unittest.TestCase):
         )
 
         # set up configuration for the PPO algorithm
-        alg_config = {}
-        alg_config['total_steps'] = 1
-        alg_config['seed'] = 1
-        alg_config['algorithm'] = PPO
-        alg_config['algorithm_config'] = SB3PPOConfig()
-
-        alg_config = SB3BaseConfig(**alg_config)
+        alg_config = SB3BaseConfig(total_steps=1, seed=1, algorithm=PPO, algorithm_config=SB3PPOConfig())
 
         # set up logger
         log_dir = "./tests/artifacts/test_run/"

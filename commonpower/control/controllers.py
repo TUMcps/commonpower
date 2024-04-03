@@ -743,7 +743,7 @@ class RLControllerSB3(RLBaseController):
         self.policy = TrainAlg(
             env=env,
             seed=config.seed,
-            **config.algorithm_config.dict()  # pydantic Model to dictionary
+            **config.algorithm_config.model_dump()  # pydantic Model to dictionary
         )
         self.policy = self.policy.load(self.load_path)
         # ugly hack to overwrite the seed in in self.policy.load (which will be done with the seed used during training)

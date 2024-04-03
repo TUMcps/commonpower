@@ -11,7 +11,7 @@ from commonpower.control.controllers import RLControllerMA, OptimalController
 from commonpower.control.logging.callbacks import *
 from commonpower.control.wrappers import MultiAgentWrapper
 from commonpower.control.runners import MAPPOTrainer, DeploymentRunner
-from commonpower.control.configs.configurations import *
+from commonpower.control.configs.algorithms import *
 from commonpower.modelling import ModelHistory
 import unittest
 import shutil
@@ -136,14 +136,13 @@ class TestControl(unittest.TestCase):
         sys.pprint()
 
         # algorithm configuration
-        config = {
-            'algorithm_name': 'mappo',
-            'seed': 1,
-            'num_env_steps': 1 * int(horizon.total_seconds() // 3600),
-            'episode_length': 1 * int(horizon.total_seconds() // 3600),
-            'penalty_factor': 2.0,
-        }
-        all_args_dict = MAPPOBaseConfig(**config)
+        config = MAPPOBaseConfig(
+            algorithm_name='mappo',
+            seed=1,
+            num_env_steps=1 * int(horizon.total_seconds() // 3600),
+            episode_length=1 * int(horizon.total_seconds() // 3600),
+            penalty_factor=2.0
+        )
 
         # add controllers
         for i in range(len(sys.nodes) - 1):
@@ -152,7 +151,7 @@ class TestControl(unittest.TestCase):
             print("test")
             _ = RLControllerMA(
                 name=str.join("agent", str(i)),
-                safety_layer=ActionProjectionSafetyLayer(penalty_factor=all_args_dict.penalty_factor),
+                safety_layer=ActionProjectionSafetyLayer(penalty_factor=config.penalty_factor),
             ).add_entity(sys.nodes[i])
 
         # set up logger
@@ -162,7 +161,7 @@ class TestControl(unittest.TestCase):
             sys=sys,
             global_controller=OptimalController("global"),
             wrapper=MultiAgentWrapper,
-            alg_config=all_args_dict,
+            alg_config=config,
             seed=5,
             logger=logger,
         )
@@ -174,12 +173,12 @@ class TestControl(unittest.TestCase):
         load_path = "./saved_models/test_model"  # default location
         trained_agent_1 = RLControllerMA(
             name="trained_mappo_agent_1",
-            safety_layer=ActionProjectionSafetyLayer(penalty_factor=all_args_dict.penalty_factor),
+            safety_layer=ActionProjectionSafetyLayer(penalty_factor=config.penalty_factor),
             pretrained_policy_path=load_path + "/agent0",
         ).add_entity(sys.nodes[0])
         trained_agent_2 = RLControllerMA(
             name="trained_mappo_agent_2",
-            safety_layer=ActionProjectionSafetyLayer(penalty_factor=all_args_dict.penalty_factor),
+            safety_layer=ActionProjectionSafetyLayer(penalty_factor=config.penalty_factor),
             pretrained_policy_path=load_path + "/agent1",
         ).add_entity(sys.nodes[1])
 
@@ -188,7 +187,7 @@ class TestControl(unittest.TestCase):
         runner = DeploymentRunner(
             sys=sys,
             global_controller=OptimalController("global"),
-            alg_config=all_args_dict,
+            alg_config=config,
             wrapper=MultiAgentWrapper,
             history=sys_history_mappo,
             seed=1,
