@@ -1,5 +1,6 @@
-from pydantic import BaseModel, ConfigDict
 from abc import ABCMeta
+
+from pydantic import BaseModel, ConfigDict
 
 
 class SB3AlgorithmBaseConfig(BaseModel):
@@ -32,9 +33,7 @@ class SB3BaseConfig(BaseModel):
     algorithm_config: SB3AlgorithmBaseConfig
     penalty_factor: float = 0.0
     # necessary for ABCMeta type
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True
-    )
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class MAPPOBaseConfig(BaseModel):

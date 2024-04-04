@@ -12,6 +12,7 @@ from commonpower.control.logging.callbacks import *
 from commonpower.control.wrappers import MultiAgentWrapper
 from commonpower.control.runners import MAPPOTrainer, DeploymentRunner
 from commonpower.control.configs.algorithms import *
+from commonpower.control.safety_layer.penalties import *
 from commonpower.modelling import ModelHistory
 import unittest
 import shutil
@@ -151,7 +152,7 @@ class TestControl(unittest.TestCase):
             print("test")
             _ = RLControllerMA(
                 name=str.join("agent", str(i)),
-                safety_layer=ActionProjectionSafetyLayer(penalty_factor=config.penalty_factor),
+                safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             ).add_entity(sys.nodes[i])
 
         # set up logger
@@ -173,12 +174,12 @@ class TestControl(unittest.TestCase):
         load_path = "./saved_models/test_model"  # default location
         trained_agent_1 = RLControllerMA(
             name="trained_mappo_agent_1",
-            safety_layer=ActionProjectionSafetyLayer(penalty_factor=config.penalty_factor),
+            safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=load_path + "/agent0",
         ).add_entity(sys.nodes[0])
         trained_agent_2 = RLControllerMA(
             name="trained_mappo_agent_2",
-            safety_layer=ActionProjectionSafetyLayer(penalty_factor=config.penalty_factor),
+            safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=load_path + "/agent1",
         ).add_entity(sys.nodes[1])
 

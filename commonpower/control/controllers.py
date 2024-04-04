@@ -741,9 +741,7 @@ class RLControllerSB3(RLBaseController):
         # has to be implemented by subclasses
         TrainAlg = config.algorithm
         self.policy = TrainAlg(
-            env=env,
-            seed=config.seed,
-            **config.algorithm_config.model_dump()  # pydantic Model to dictionary
+            env=env, seed=config.seed, **config.algorithm_config.model_dump()  # pydantic Model to dictionary
         )
         self.policy = self.policy.load(self.load_path)
         # ugly hack to overwrite the seed in in self.policy.load (which will be done with the seed used during training)

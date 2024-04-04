@@ -10,6 +10,7 @@ from pyomo.environ import value
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 
+from commonpower.control.safety_layer.penalties import BasePenalty, DistanceDependingPenalty, NoPenalty
 from commonpower.core import System
 from commonpower.modelling import ModelEntity
 from commonpower.utils.cp_exceptions import EntityError
@@ -17,13 +18,14 @@ from commonpower.utils.default_solver import get_default_solver
 
 
 class BaseSafetyLayer:
-    def __init__(self, solver: OptSolver = get_default_solver()):
+    def __init__(self, solver: OptSolver = get_default_solver(), penalty: BasePenalty = NoPenalty()):
         """
         Base class for safety layers. A safety layer checks whether the action selected by a controller violates any
         constraints of the controlled entities and adjusts the actions if necessary.
 
         Args:
             solver (OptSolver, optional): solver for optimization problem
+            penalty (BasePenalty, optional): penalty for suggesting unsafe actions (will be substracted from reward)
 
         Returns:
             BaseSafetyLayer
@@ -36,6 +38,7 @@ class BaseSafetyLayer:
         self.model = None
         self.unsafe_action = None
         self.solver = solver
+        self.penalty = penalty
 
     def initialize(self, nodes: List[ModelEntity], top_level_nodes: List[ModelEntity]):
         """
@@ -44,7 +47,6 @@ class BaseSafetyLayer:
         Args:
             nodes (List[ModelEntity]): list of controlled entities to be safeguarded
             top_level_nodes (List[ModelEntity]): list of controlled entities in highest level of model tree
-            solver (OptSolver): solver for optimization problem which will be called by Pyomo
 
         Returns:
             None
@@ -86,7 +88,7 @@ class BaseSafetyLayer:
 
         self.model = mdl
 
-        # set objective function
+        # set objective function -> depends on used safety method
         self.model.safety_obj = Objective(expr=self.get_objective_function())
 
         results = self.solver.solve(self.model, warmstart=True)
@@ -99,6 +101,7 @@ class BaseSafetyLayer:
         ]:
             raise EntityError(self.top_level_nodes[0], "Cannot find a safe input")
 
+        action_corrected = value(self.model.safety_obj) > 1e-5
         # retrieve inputs from solved optimization problem
         safe_action = deepcopy(action)  # copy or deepcopy?
         node_actions = {}
@@ -112,32 +115,38 @@ class BaseSafetyLayer:
                 for i in range(el_action.shape[0]):
                     safe_action[node_id][el_id][i] = node_actions[node_id][el_id][i]
 
-        # correction penalty (can be used in RL reward function)
-        correction_penalty = self.get_correction_penalty()
-        action_corrected = value(self.model.safety_obj) > 1e-5
+        if not action_corrected:
+            return safe_action, action_corrected, 0.0
+        # correction penalty (can be used in RL reward function) -> depends on used penalty type
+        # If the penalty is distance depending, the penalty is computed based on the distance between the unsafe action
+        # and the safe action. Therefore, the penalty needs the value of the safety objective function.
+        if isinstance(self.penalty, DistanceDependingPenalty):
+            correction_penalty = self.penalty.get_correction_penalty(value(self.model.safety_obj))
+        else:
+            correction_penalty = self.penalty.get_correction_penalty()
+
         return safe_action, action_corrected, correction_penalty
 
     def get_objective_function(self):
         # needs to be implemented by subclasses
         raise NotImplementedError
 
-    def get_correction_penalty(self):
-        # needs to be implemented by subclasses
-        raise NotImplementedError
-
 
 class ActionProjectionSafetyLayer(BaseSafetyLayer):
-    def __init__(self, penalty_factor: float = 1.0, solver: OptSolver = get_default_solver()):
+    def __init__(
+        self,
+        solver: OptSolver = get_default_solver(),
+        penalty: BasePenalty = DistanceDependingPenalty(penalty_factor=1.0),
+    ):
         """
         Computes safe action by minimizing the distance between the RL action and the safe action while also satisfying
         constraints.
 
         Args:
-            penalty_factor (float): factor to control magnitude of penalty
             solver (OptSolver, optional): solver for optimization problem
+            penalty (BasePenalty, optional): penalty for suggesting unsafe actions (will be substracted from reward)
         """
-        super().__init__(solver=solver)
-        self.penalty_factor = penalty_factor
+        super().__init__(solver=solver, penalty=penalty)
 
     def get_objective_function(self):
         """
@@ -177,14 +186,3 @@ class ActionProjectionSafetyLayer(BaseSafetyLayer):
             return obj
 
         return obj_fcn_rl
-
-    def get_correction_penalty(self):
-        """
-        In this case, the penalty for the action correction is the objective resulting from solving the
-        minimal-adjustment constrained optimization problem.
-
-        Returns:
-            float: penalty
-
-        """
-        return self.penalty_factor * value(self.model.safety_obj)

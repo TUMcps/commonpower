@@ -371,7 +371,7 @@ class SingleAgentTrainer(BaseTrainer):
                 tensorboard_log=self.logger.get_log_dir(),
                 seed=self.seed,
                 verbose=2,
-                **self.alg_config.algorithm_config.model_dump()  # convert pydantic Model to dictionary
+                **self.alg_config.algorithm_config.model_dump(),  # convert pydantic Model to dictionary
             )
 
     def finish_run(self):
