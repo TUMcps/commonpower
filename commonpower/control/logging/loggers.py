@@ -67,6 +67,7 @@ class WandBLogger(BaseLogger):
         self,
         log_dir: str,
         entity_name: str,
+        run_name: str,
         project_name: str = None,
         callback: BaseCallback = WandBSafetyCallback,
         model_save_freq: int = 100,
@@ -79,6 +80,7 @@ class WandBLogger(BaseLogger):
         Args:
             log_dir (str): relative path to logging directory
             entity_name (str): name of the wandb entity to which the runs will be logged
+            run_name (str): name under which the run will be displayed in WandB
             project_name (str, optional): name of the wandb project to which the runs will be logged
             callback (BaseCallback, optional): object that implements actual logging during training. By defining a \
             customized callback, additional information can be logged (apart from standard metrics like mean_eps_reward)
@@ -90,6 +92,7 @@ class WandBLogger(BaseLogger):
 
         super().__init__(log_dir=log_dir)
         self.entity_name = entity_name
+        self.run_name = run_name
         self.project_name = project_name
         self.callback = callback
         self.alg_config = alg_config
@@ -97,7 +100,11 @@ class WandBLogger(BaseLogger):
         self.verbose = verbose
 
         self.run = wandb.init(
-            project=self.project_name, entity=self.entity_name, config=self.alg_config, sync_tensorboard=True
+            project=self.project_name,
+            entity=self.entity_name,
+            name=self.run_name,
+            config=self.alg_config,
+            sync_tensorboard=True,
         )
         self.model_save_path = self.log_dir + f"models/{self.run.id}"
         self.log_dir = self.log_dir + f"runs/{self.run.id}"
@@ -123,6 +130,10 @@ class WandBLogger(BaseLogger):
 
         """
         wandb.finish()
+
+    @property
+    def run_id(self):
+        return wandb.run.id
 
 
 class MARLTensorboardLogger(BaseLogger):
