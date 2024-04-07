@@ -18,6 +18,7 @@ import torch
 import wandb
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
@@ -346,7 +347,20 @@ class SingleAgentTrainer(BaseTrainer):
         """
         self.prepare_run()
         training_steps = self.alg_config.total_steps
-        self.policy.learn(total_timesteps=training_steps, callback=self.logger.log_function())
+        episode_length = int(self.control_horizon / self.dt)
+        # Define logging interval based on config of the algorithm
+        if self.alg_config.algorithm == PPO:
+            log_int = int(self.alg_config.algorithm_config.n_steps / episode_length)
+        elif self.alg_config.algorithm == SAC:
+            log_int = int(episode_length / self.alg_config.algorithm_config.train_freq)
+        else:
+            log_int = 1
+            print("Warning: Logging interval not defined for this algorithm. Logging after each training step.")
+        if log_int < 1:
+            log_int = 1
+            print("Warning: Logging interval was infeasible. Logging after each training step.")
+
+        self.policy.learn(total_timesteps=training_steps, callback=self.logger.log_function(), log_interval=log_int)
         # store reference to model in controller
         for ctrl in self.sys.get_controllers(ctrl_types=[RLBaseController]).values():
             ctrl.save(self.policy, save_path=self.save_path)
