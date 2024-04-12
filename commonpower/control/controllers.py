@@ -30,6 +30,7 @@ class BaseController:
         obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
         global_obs_elements: List[Tuple[Union[Node, list]]] = None,
         cost_callback: Callable = None,
+        use_predicted_cost_values: bool = False,
     ):
         """
         This is the base class for any controller type that will be implemented. It manages assignment of controllable
@@ -47,6 +48,10 @@ class BaseController:
             the controlled entities) that should be observed.
             cost_callback (Callable): function used within the cost function of the controller to compute additional \
             cost terms.
+            use_predicted_cost_values (bool): We can either compute the cost only for the next time step (which depends
+            on the control input from this time step) or also include the "predicted costs" which result from solving
+            the optimization problem over the forecast horizon. Since the standard RL paradigm is to only compute the
+            reward for the next time step, we set the default to False.
 
         Returns:
             BaseController
@@ -67,6 +72,7 @@ class BaseController:
         self.input_space = None
 
         self.cost_callback = cost_callback
+        self.use_predicted_cost_values = use_predicted_cost_values
 
     def initialize(self):
         """
@@ -313,7 +319,14 @@ class BaseController:
         """
         # ToDo: Need to adjust if we ever have an action horizon > 1 time step
         cost_values = [n.get_value(sys_inst, "cost") for n in self.top_level_nodes]
-        cost_values = [item for sublist in cost_values for item in sublist]
+        if self.use_predicted_cost_values:
+            # gets the cost over the entire forecast horizon for each node.
+            # Only the cost of this time step depends on the RL agent's action. For all other time steps, it basically
+            # depends on an "optimal controller" that is used to check whether the system remains feasible
+            # This is not the RL paradigm, but can be useful (since we anyway use this mechanism in the safeguard)
+            cost_values = [item for sublist in cost_values for item in sublist]
+        else:
+            cost_values = [cost[0] for cost in cost_values]
         ctrl_cost = sum(cost_values)
 
         if self.cost_callback:
@@ -419,6 +432,7 @@ class OptimalController(BaseController):
         cost_callback: Callable = None,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
+        use_predicted_cost_values: bool = False,
     ):
         """
         Optimal controller that solves a constrained optimization problem to find the control inputs which minimize
@@ -431,11 +445,15 @@ class OptimalController(BaseController):
             solver (OptSolver, optional): solver for optimization problem
             control_input_trajectory_length (int, optional): number of time steps the controller
                 computes control inputs for
+            use_predicted_cost_values (bool): We can either compute the cost only for the next time step (which depends
+            on the control input from this time step) or also include the "predicted costs" which result from solving
+            the optimization problem over the forecast horizon. Since the standard RL paradigm is to only compute the
+            reward for the next time step, we set the default to False.
 
         Returns:
             OptimalController
         """
-        super().__init__(name=name, cost_callback=cost_callback)
+        super().__init__(name=name, cost_callback=cost_callback, use_predicted_cost_values=use_predicted_cost_values)
         self.ctrl_type = "oc"  # optimal control
         self.sys_inst = None
         self.model = None
@@ -528,6 +546,7 @@ class RLBaseController(BaseController):
         safety_layer=None,
         cost_callback: Callable = None,
         pretrained_policy_path: str = None,
+        use_predicted_cost_values: bool = False,
     ):
         """
         Base class for reinforcement learning (RL) controllers. Requires a safety layer to ensure constraint
@@ -545,12 +564,16 @@ class RLBaseController(BaseController):
             cost_callback (Callable): function used within the cost function of the controller to compute additional \
             cost terms
             pretrained_policy_path (str): directory with stored policy parameters of an existing policy
+            use_predicted_cost_values (bool): We can either compute the cost only for the next time step (which depends
+            on the control input from this time step) or also include the "predicted costs" which result from solving
+            the optimization problem over the forecast horizon. Since the standard RL paradigm is to only compute the
+            reward for the next time step, we set the default to False.
 
         Returns:
             RLBaseController
 
         """
-        super().__init__(name=name, cost_callback=cost_callback)
+        super().__init__(name=name, cost_callback=cost_callback, use_predicted_cost_values=use_predicted_cost_values)
         self.ctrl_type = "rl"  # Reinforcement Learning
         self.device = device
         self.train = train
