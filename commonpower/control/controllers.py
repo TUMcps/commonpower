@@ -17,6 +17,7 @@ from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
+from commonpower.control.controller_utils import single_step_cost_callback
 from commonpower.core import Node, System
 from commonpower.modelling import ControllableModelEntity, ElementTypes
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
@@ -29,7 +30,7 @@ class BaseController:
         name: str,
         obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
         global_obs_elements: List[Tuple[Union[Node, list]]] = None,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
     ):
         """
         This is the base class for any controller type that will be implemented. It manages assignment of controllable
@@ -45,8 +46,7 @@ class BaseController:
             the observation of the controller.
             global_obs_elements (List[Tuple[Union[Node, list]]]): additional model elements (can also be from outside \
             the controlled entities) that should be observed.
-            cost_callback (Callable): function used within the cost function of the controller to compute additional \
-            cost terms.
+            cost_callback (Callable): function used to compute the stage cost (step cost) of the controller
 
         Returns:
             BaseController
@@ -300,9 +300,7 @@ class BaseController:
 
     def get_cost(self, sys_inst: ConcreteModel) -> float:
         """
-        Compute control cost for one time step based on 1) cost resulting from solution of optimization problem in Pyomo
-        model for the controllable entities assigned to this controller and 2) the cost callback to add additional
-        terms.
+        Compute control cost for one time step
 
         Args:
             sys_inst (ConcreteModel): current Pyomo model with solution from optimization
@@ -311,14 +309,7 @@ class BaseController:
             float: control cost for one time step
 
         """
-        # ToDo: Need to adjust if we ever have an action horizon > 1 time step
-        cost_values = [n.get_value(sys_inst, "cost") for n in self.top_level_nodes]
-        cost_values = [item for sublist in cost_values for item in sublist]
-        ctrl_cost = sum(cost_values)
-
-        if self.cost_callback:
-            ctrl_cost += self.cost_callback(ctrl=self, sys_inst=sys_inst)
-        return ctrl_cost
+        return self.cost_callback(ctrl=self, sys_inst=sys_inst)
 
     def set_obs_mask(
         self,
