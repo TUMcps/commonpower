@@ -407,7 +407,7 @@ class OptimalController(BaseController):
     def __init__(
         self,
         name: str,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
     ):
@@ -517,7 +517,7 @@ class RLBaseController(BaseController):
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
         pretrained_policy_path: str = None,
     ):
         """
@@ -769,7 +769,7 @@ class RLControllerMA(RLBaseController):
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
         pretrained_policy_path: str = None,
     ):
         super().__init__(
