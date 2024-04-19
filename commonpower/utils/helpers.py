@@ -2,6 +2,7 @@ import functools
 from datetime import datetime
 from typing import List, Union
 
+import numpy as np
 import pandas as pd
 from pyomo.core import ConcreteModel
 
@@ -71,3 +72,11 @@ def model_root(model: ConcreteModel) -> ConcreteModel:
         return root
 
     return get_root(model)
+
+
+def get_adjusted_cost(hist, sys):
+    costs = hist.filter_for_entities(sys, False).filter_for_element_names("cost").history
+    output = [c[1]["cost"][0] for c in costs]
+    terminal_cost = np.sum(costs[-1][1]["cost"])
+    output[-1] = terminal_cost
+    return output

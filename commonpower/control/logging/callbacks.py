@@ -4,12 +4,13 @@ Collection of callbacks for logging.
 import os
 from typing import Any, Dict, Literal, Optional
 
-import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import Logger
 from stable_baselines3.common.utils import safe_mean
 from wandb.integration.sb3 import WandbCallback
 from wandb.sdk.lib import telemetry as wb_telemetry
+
+import wandb
 
 
 class SafetyCallback(BaseCallback):
