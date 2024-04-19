@@ -345,7 +345,7 @@ class System(ControllableModelEntity):
             return env
 
         self.env_func = init_env()
-        return init_env()
+        return self.env_func
 
     def global_observation_space(self, global_obs_mask: List[Tuple[Union[ModelEntity, list]]]):
         """

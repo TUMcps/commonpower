@@ -41,7 +41,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ci = ["pytest", "pandapower"]
-full = ["jupyter", "pandapower"]
+full = ["jupyter", "pandapower", "pymongo"]
 docs = [
   "myst_parser", 
   "sphinx_autodoc_typehints", 
@@ -49,6 +49,7 @@ docs = [
   "sphinx_rtd_theme", 
   "sphinx_autorun"
 ]
+tuple_db = ["pymongo"]
 
 [project.urls]
 "Homepage" = "https://github.com/TUMcps/commonpower"

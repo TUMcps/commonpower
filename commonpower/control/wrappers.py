@@ -2,10 +2,14 @@
 Wrappers to adjust API in environments.py to different RL training algorithms.
 """
 from collections import deque
+from functools import partial
 from typing import List, Tuple
 
 import gymnasium as gym
 import numpy as np
+
+from commonpower.control.environments import ControlEnv
+from commonpower.utils.tuple_db import RLTuple, TupleDB
 
 
 def ctrl_dict_to_list(input_dict: dict) -> list:
@@ -52,6 +56,23 @@ def list_to_ctrl_dict(input_list: list, original_keys: dict) -> dict:
         output_dict[agent_id] = agent_output_dict
     # output_dict = {original_keys[i]: value for i, value in enumerate(input_list)}
     return output_dict
+
+
+class WrapperStack:
+    def __init__(self):
+        self.wrappers = []
+
+    def add(self, wrapper: gym.Wrapper, **kwargs):
+        self.wrappers.append((wrapper, kwargs))
+        return self
+
+    def get_stack(self):
+        def wrap_func(env: gym.Env, wrappers: list):
+            for wrapper in wrappers:
+                env = wrapper[0](env, **wrapper[1])
+            return env
+
+        return partial(wrap_func, wrappers=self.wrappers)
 
 
 class SingleAgentWrapper(gym.Wrapper):
@@ -162,6 +183,80 @@ class SingleAgentWrapper(gym.Wrapper):
             for el_obs in n_obs.values():
                 new_obs = np.concatenate((new_obs, el_obs))
         return new_obs
+
+
+class RecordTransitionsWrapper(gym.Wrapper):
+    def __init__(
+        self,
+        env: ControlEnv,
+        scenario_id: str,
+        run_config: dict,
+        seed: int,
+        tuple_db: TupleDB,
+        buffer_size: int = 100,
+        write_buffer_on_done: bool = True,
+    ):
+        """
+        Wrapper for recording transition tuples (s,a,s',r) either to current disk or to a data base.
+        NOTE: Currently only available for single-agent RL!
+
+        Args:
+            env (gym.Env): The gym environment to be wrapped.
+            tuple_db (TupleDB): The database for storing the transition tuples.
+            buffer_size (int, optional): The maximum size of the tuple buffer. Defaults to 100.
+            write_buffer_on_done (bool, optional): Whether to always write out the buffer on a done state.
+                Defaults to True.
+        """
+        super().__init__(env)
+
+        if len(env.unwrapped.controllers) > 1:
+            raise ValueError("RecordTransitionsWrapper cannot handle more than 1 agent")
+
+        self.tuple_db = tuple_db
+        self.buffer_size = buffer_size
+        self.write_buffer_on_done = write_buffer_on_done
+
+        self.tuple_buffer: List[RLTuple] = []
+
+        # next obs structure ensures that (s, a, r, s') are collected in the correct order
+        # necessary for d3rlpy library
+        self.current_obs = None
+
+        self.tuple_db.create_run(scenario_id, run_config, seed)
+
+    def step(self, action):
+
+        next_obs, reward, terminated, truncated, info = self.env.step(action)
+
+        # TODO: support raw information in the future as well
+        assert isinstance(self.current_obs, np.ndarray) and isinstance(
+            action, np.ndarray
+        ), "observation and action can only be numpy arrays for now"
+
+        current_tuple = RLTuple(
+            observation=self.current_obs,
+            action=action,
+            reward=reward,
+            terminal=terminated,
+            timeout=truncated,
+        )
+
+        self.tuple_buffer.append(current_tuple)
+
+        if len(self.tuple_buffer) >= self.buffer_size or ((terminated or truncated) and self.write_buffer_on_done):
+            self.tuple_db.record_tuples(self.tuple_buffer)
+            self.tuple_buffer = []
+
+        self.current_obs = next_obs
+
+        return next_obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+
+        self.current_obs = obs
+
+        return obs, info
 
 
 class MultiAgentWrapper(gym.Wrapper):
