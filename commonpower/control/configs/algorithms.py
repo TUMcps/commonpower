@@ -6,27 +6,40 @@ from pydantic import BaseModel, ConfigDict
 class SB3AlgorithmBaseConfig(BaseModel):
     policy: str = 'MlpPolicy'
     device: str = 'cpu'
-    batch_size: int = 12
+    batch_size: int = 12  # since as default we use small amount of data per update, we also use a smaller batch size
     learning_rate: float = 0.0003
 
 
 class SB3PPOConfig(SB3AlgorithmBaseConfig):
-    n_steps: int = 24
-    use_sde: bool = True
-    ent_coef: float = 0.0
-    max_grad_norm: float = 0.9
-    normalize_advantage: bool = True
-    policy_kwargs: dict = dict(net_arch=dict(pi=[64, 64], vf=[64, 64]), log_std_init=0, squash_output=True)
+    n_steps: int = 24  # corresponds to 24 time steps, so 1 day if tau=1h
+    policy_kwargs: dict = dict(net_arch=dict(pi=[64, 64], vf=[64, 64]), log_std_init=0, squash_output=False)
+    use_sde: bool = False  # SB3 PPO default
+    sde_sample_freq: int = -1  # SB3 PPO default
+    n_epochs: int = 10  # SB3 PPO default
+    gae_lambda: float = 0.95  # SB3 PPO default
+    clip_range: float = 0.2  # SB3 PPO default
+    clip_range_vf: float = None  # SB3 PPO default
+    ent_coef: float = 0.0  # SB3 PPO default
+    vf_coef: float = 0.5  # SB3 PPO default
+    max_grad_norm: float = 0.5  # SB3 PPO default
+    normalize_advantage: bool = True  # SB3 PPO default
 
 
 class SB3SACConfig(SB3AlgorithmBaseConfig):
-    buffer_size: int = 1000000
-    learning_starts: int = 100
-    train_freq: int = 24
+    train_freq: int = 24  # same as "n_steps" in PPO
     policy_kwargs: dict = dict(net_arch=dict(pi=[64, 64], qf=[64, 64]))
+    buffer_size: int = 1000000  # SB3 SAC default
+    learning_starts: int = 100  # SB3 SAC default
+    tau: float = 0.005  # SB3 SAC default
+    gamma: float = 0.99  # SB3 SAC default
+    gradient_steps: int = 1  # SB3 SAC default
+    target_update_interval: int = 1  # SB3 SAC default
+    use_sde: bool = False  # SB3 SAC default
+    use_sde_at_warmup: bool = False  # SB3 SAC default
+    sde_sample_freq: int = -1  # SB3 SAC default
 
 
-class SB3BaseConfig(BaseModel):
+class SB3MetaConfig(BaseModel):
     total_steps: int
     algorithm: ABCMeta
     seed: int
