@@ -102,7 +102,7 @@ class TestControl(unittest.TestCase):
         )
 
         # set up configuration for the PPO algorithm
-        alg_config = SB3BaseConfig(total_steps=1, seed=1, algorithm=PPO, algorithm_config=SB3PPOConfig())
+        alg_config = SB3MetaConfig(total_steps=1, seed=1, algorithm=PPO, algorithm_config=SB3PPOConfig())
 
         # set up logger
         log_dir = "./tests/artifacts/test_run/"
