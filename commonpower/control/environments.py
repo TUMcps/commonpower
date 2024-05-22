@@ -4,12 +4,12 @@ Base API (based on gymnasium API) between controlled system and RL training algo
 from collections import OrderedDict, deque
 from copy import copy, deepcopy
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
 
-from commonpower.modelling import ControllableModelEntity
+from commonpower.modelling import ControllableModelEntity, ModelHistory
 from commonpower.utils.cp_exceptions import ControllerError
 
 
@@ -20,6 +20,7 @@ class ControlEnv(gym.Env):
         continuous_control: bool = False,
         fixed_start: datetime = None,
         normalize_action_space: bool = True,
+        history: ModelHistory = None,
     ):
         """
         Class that provides the interface between our power system and any reinforcement learning algorithm. Based on
@@ -32,6 +33,7 @@ class ControlEnv(gym.Env):
             fixed_start (datetime): if None, we will train from multiple random start times.
                 Otherwise, we will always train from the same start time.
             normalize_action_space (bool): whether to normalize the action space to [-1,1]
+            history (ModelHistory): logger
 
 
         Returns:
@@ -46,6 +48,7 @@ class ControlEnv(gym.Env):
         self.train_history = {}
         self.episode_history = {agent_id: deque(maxlen=100) for agent_id in self.controllers.keys()}
         self.normalize_actions = normalize_action_space
+        self.system_history = history
 
         # ToDo: shared observation space?
         self.observation_space = self._get_observation_space()
@@ -63,7 +66,7 @@ class ControlEnv(gym.Env):
 
         self.n_steps = 0
 
-    def step(self, action: OrderedDict) -> Tuple[dict, dict, bool, bool, dict]:
+    def step(self, action: Union[OrderedDict, None]) -> Tuple[dict, dict, bool, bool, dict]:
         """
         Advance the environment (in our case, the power system) by one step in time by applying control actions to
         discrete-time dynamics and updating data sources. Handled within the System class. The actions of the RL agent
@@ -87,19 +90,22 @@ class ControlEnv(gym.Env):
                 - additional information (dict)
 
         """
-        # expects a list of actions or a single action (numpy array) as an input
-        if len(self.controllers) == 1 and isinstance(action, list):
-            raise ControllerError(self.controllers[0], "One agent but multiple actions")
-        if len(self.controllers) > 1 and isinstance(action, float):
-            raise ControllerError(self.controllers[0], "Multiple agents but only one action")
+        if action is not None:
+            # expects a list of actions or a single action (numpy array) as an input
+            if len(self.controllers) == 1 and isinstance(action, list):
+                raise ControllerError(self.controllers[0], "One agent but multiple actions")
+            if len(self.controllers) > 1 and isinstance(action, float):
+                raise ControllerError(self.controllers[0], "Multiple agents but only one action")
 
-        # store action
-        if self.normalize_actions:
-            action = self._denormalize_action(action)
+            # store action
+            if self.normalize_actions:
+                action = self._denormalize_action(action)
 
         self.current_action = action
 
-        obs, costs, terminated, truncated, info = self.sys.step(rl_action_callback=self.rl_action_callback)
+        obs, costs, terminated, truncated, info = self.sys.step(
+            rl_action_callback=self.rl_action_callback, history=self.system_history
+        )
         # extract only the info for the RL controllers
         obs = {agent: agent_obs for agent, agent_obs in obs.items() if agent in self.controllers.keys()}
         # rewards are negative costs

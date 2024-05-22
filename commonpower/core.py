@@ -313,7 +313,11 @@ class System(ControllableModelEntity):
             return {ctrl_id: ctrl for ctrl_id, ctrl in self.controllers.items() if isinstance(ctrl, tuple(ctrl_types))}
 
     def create_env_func(
-        self, wrapper: gym.Wrapper = None, fixed_start: datetime = None, normalize_actions: bool = True
+        self,
+        wrapper: gym.Wrapper = None,
+        fixed_start: datetime = None,
+        normalize_actions: bool = True,
+        history: ModelHistory = None,
     ):
         """
         Creates an environment which encapsulates the power system in a way that RL algorithms can interact with it.
@@ -324,6 +328,7 @@ class System(ControllableModelEntity):
             (used for example to map from multi-agent environment to single-agent environment)
             fixed_start (datetime): whether to run on a fixed given day
             normalize_actions (bool): whether or not to normalize the action space
+            history (ModelHistory): logger
 
         Returns:
             wrapper(ControlEnv): environment instance
@@ -339,6 +344,7 @@ class System(ControllableModelEntity):
                 continuous_control=self.continuous_control,
                 fixed_start=fixed_start,
                 normalize_action_space=normalize_actions,
+                history=history,
             )
             if wrapper:
                 env = wrapper(env)
@@ -448,7 +454,11 @@ class System(ControllableModelEntity):
         return date
 
     def step(
-        self, obs: dict = None, rl_action_callback: Callable = None, history: ModelHistory = None
+        self,
+        obs: dict = None,
+        rl_action_callback: Callable = None,
+        rl_observation_callback: Callable = None,
+        history: ModelHistory = None,
     ) -> tuple[dict, dict, bool, bool, dict]:
         """
         Runs one time step of the power system simulation. This includes fixing the actions computed by the system's
@@ -459,6 +469,7 @@ class System(ControllableModelEntity):
         Args:
             obs (dict): dictionary of {controller_id: controller_observation}
             rl_action_callback (Callable): callback used to retrieve actions from RL controllers
+            rl_observation_callback (Callable): callback used to transform observation for RL controllers if required
             model_history (ModelHistroy, optional): Instance of ModelHistory to log the system model.
 
         Returns:
