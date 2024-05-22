@@ -637,12 +637,15 @@ class RLBaseController(BaseController):
             verified_action = self.clip_to_bounds(verified_action)
             self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
         else:
-            # ToDo: generalize this?
-            obs = self.flatten_obs(obs)
-            action = self.predict_action(obs)
-            action = self.act_array_to_dict(action)
-            if self.denormalize_inputs:
-                action = self._denormalize_input(action)
+            if input_callback is None:
+                # we actually want to predict the action (called by DeploymentRunner._run())
+                action = self.predict_action(obs)
+                action = self.act_array_to_dict(action)
+                if self.denormalize_inputs:
+                    action = self._denormalize_input(action)
+            else:
+                # we just pass the action on
+                action = input_callback(self.name)
             verified_action, action_corrected, safety_penalty = self.safety_layer.compute_safe_action(action)
             # clip actions to bounds to account for numerical errors
             verified_action = self.clip_to_bounds(verified_action)
