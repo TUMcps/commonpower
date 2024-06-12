@@ -10,7 +10,7 @@ import warnings
 from collections import OrderedDict, deque
 from datetime import datetime, timedelta
 from itertools import chain
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -23,6 +23,7 @@ from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
+from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
 from commonpower.control.controller_utils import t2n
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
@@ -164,7 +165,7 @@ class BaseRunner:
             None
 
         """
-        self.start_time = start_time
+        self.start_time = to_datetime(start_time)
 
     def system_feasible(self, n_checks: int = 1):
         """
@@ -272,7 +273,7 @@ class SingleAgentTrainer(BaseTrainer):
     def __init__(
         self,
         sys: System,
-        alg_config: dict,
+        alg_config: SB3MetaConfig,
         global_controller: OptimalController = OptimalController("global"),
         policy: BasePolicy = None,
         wrapper: gym.Wrapper = None,
@@ -295,7 +296,7 @@ class SingleAgentTrainer(BaseTrainer):
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using
                 a market node or a generator. Defaults to OptimalController("global").
-            alg_config (dict): configuration for the RL algorithm and policy to be trained
+            alg_config (SB3MetaConfig): configuration for the RL algorithm and policy to be trained
             policy (BasePolicy): policy instance (can be handed over to be retrained)
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
@@ -399,7 +400,7 @@ class DeploymentRunner(BaseRunner):
         self,
         sys: System,
         global_controller: OptimalController = OptimalController("global"),
-        alg_config: dict = None,
+        alg_config: Union[SB3MetaConfig, MAPPOBaseConfig] = None,
         wrapper: gym.Wrapper = None,
         forecast_horizon: timedelta = timedelta(hours=24),
         control_horizon: timedelta = timedelta(hours=24),
@@ -418,7 +419,8 @@ class DeploymentRunner(BaseRunner):
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using
                 a market node or a generator. Defaults to OptimalController("global").
-            alg_config (dict): configuration for the RL algorithm and policy to be trained
+            alg_config (Union[SB3MetaConfig, MAPPOBaseConfig]): configuration for the RL algorithm and policy to be
+                trained
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             forecast_horizon (timedelta): amount of time that the controller looks into the future
@@ -463,10 +465,7 @@ class DeploymentRunner(BaseRunner):
         """
         self.prepare_run()
         # run
-        if self.rl_controllers:
-            obs, _ = self.env.reset()
-        else:
-            obs = self.sys.observe()
+        obs, _ = self.env.reset()
 
         for step in tqdm(range(n_steps)):
             if self.rl_controllers:
@@ -500,6 +499,9 @@ class DeploymentRunner(BaseRunner):
 
         """
         super().prepare_run()
+        # ToDo: more elegant way to solve this?
+        if self.start_time is not None:
+            self.fixed_start = self.start_time
         # We have to wrap the environment with a DeploymentWrapper to ensure compatibility
         self.env = DeploymentWrapper(
             self.sys.create_env_func(
@@ -519,7 +521,7 @@ class MAPPOTrainer(BaseTrainer):
     def __init__(
         self,
         sys: System,
-        alg_config: dict,
+        alg_config: MAPPOBaseConfig,
         global_controller: OptimalController = OptimalController("global"),
         wrapper: gym.Wrapper = None,
         logger: BaseLogger = None,
@@ -542,7 +544,7 @@ class MAPPOTrainer(BaseTrainer):
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using
                 a market node or a generator. Defaults to OptimalController("global").
-            alg_config (dict): configuration for the RL algorithm and policy to be trained
+            alg_config (MAPPOBaseConfig): configuration for the RL algorithm and policy to be trained
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             logger (BaseLogger): object for handling training logs

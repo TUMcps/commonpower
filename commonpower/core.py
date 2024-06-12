@@ -422,8 +422,8 @@ class System(ControllableModelEntity):
                         "Some of the given DataProviders have no overlap in their date ranges.",
                     )
 
-            # upper limit reduced by forecast horizon to not run into problems during update()
-            date_range[1] = date_range[1] - self.forecast_horizon
+            # upper limit reduced by control horizon to not run into problems during update() and forecasting
+            date_range[1] = date_range[1] - self.control_horizon
 
         else:  # if no data providers are defined
             date_range = [datetime(1900, 1, 1), datetime(2100, 12, 31)]
