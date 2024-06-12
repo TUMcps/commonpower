@@ -90,12 +90,14 @@ Reference
 
 CommonPower was developed and is maintained by the Cyber-Physical Systems Group at the Chair for Robotics and Embedded Systems at Technical University of Munich.
 
-If you use CommonPower, please cite it as: 
+If you use CommonPower, please cite the corresponding [tool paper](https://arxiv.org/abs/2406.03231) as 
 ```
-@article{eichelbeck2023commonpower,
-  title={CommonPower: Supercharging machine learning for smart grids},
-  author={Eichelbeck, Michael and Markgraf, Hannah and Althoff, Matthias},
-  year={2023}
+@misc{eichelbeck2024commonpower,
+      title={CommonPower: Supercharging Machine Learning for Smart Grids}, 
+      author={Michael Eichelbeck and Hannah Markgraf and Matthias Althoff},
+      year={2024},
+      eprint={2406.03231},
+      archivePrefix={arXiv},
 }
 ```
 
