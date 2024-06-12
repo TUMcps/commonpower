@@ -112,7 +112,7 @@ class ModelElement:
         elif self.type == ElementTypes.INPUT:
             self.pyomo_class = Var
         elif self.type == ElementTypes.COST:
-            self.pyomo_class = Param
+            self.pyomo_class = Var
         elif self.type == ElementTypes.DATA:
             self.pyomo_class = Param
         elif self.type == ElementTypes.CONSTANT:

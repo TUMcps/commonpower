@@ -1,11 +1,16 @@
 """
 Wrappers to adjust API in environments.py to different RL training algorithms.
 """
-from collections import deque
-from typing import List, Tuple
+from collections import OrderedDict, deque
+from functools import partial
+from typing import List, Optional, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
+
+from commonpower.control.environments import ControlEnv
+from commonpower.control.parsing import ParserFactory
+from commonpower.utils.tuple_db import RLTuple, TupleDB
 
 
 def ctrl_dict_to_list(input_dict: dict) -> list:
@@ -52,6 +57,58 @@ def list_to_ctrl_dict(input_list: list, original_keys: dict) -> dict:
         output_dict[agent_id] = agent_output_dict
     # output_dict = {original_keys[i]: value for i, value in enumerate(input_list)}
     return output_dict
+
+
+class WrapperStack:
+    def __init__(self):
+        self.wrappers = []
+
+    def add(self, wrapper: gym.Wrapper, **kwargs):
+        self.wrappers.append((wrapper, kwargs))
+        return self
+
+    def get_stack(self):
+        def wrap_func(env: gym.Env, wrappers: list):
+            for wrapper in wrappers:
+                env = wrapper[0](env, **wrapper[1])
+            return env
+
+        return partial(wrap_func, wrappers=self.wrappers)
+
+
+class DeploymentWrapper(gym.Wrapper):
+    def __init__(self, env):
+        """
+        Wrapper to standardize the deployment within CommonPower. Mainly takes care of transforming actions and
+        observations such that they match the underlying wrappers (e.g., SingleAgentWrapper, MultiAgentWrapper, ...).
+
+        Args:
+            env (gym.Environment): potentially wrapped ControlEnv
+
+        Returns: DeploymentWrapper
+
+        """
+        super().__init__(env)
+        self.env = env
+        self.parser = ParserFactory(env).get_parser()
+
+    def step(self, action: Union[OrderedDict, None]) -> Tuple[dict, dict, bool, bool, dict]:
+        # convert the action to the format required by the underlying environment/ wrapper stack
+        if action is not None:
+            action = self.parser.parse_action(action)
+        obs, reward, done, truncated, info = self.env.step(action)
+        obs = self.parser.parse_obs(obs)
+        return obs, reward, done, truncated, info
+
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[dict] = None,
+    ) -> Tuple[dict, dict]:
+        obs, obs_info = self.env.reset()
+        obs = self.parser.parse_obs(obs)
+        return obs, obs_info
 
 
 class SingleAgentWrapper(gym.Wrapper):
@@ -164,6 +221,80 @@ class SingleAgentWrapper(gym.Wrapper):
         return new_obs
 
 
+class RecordTransitionsWrapper(gym.Wrapper):
+    def __init__(
+        self,
+        env: ControlEnv,
+        scenario_id: str,
+        run_config: dict,
+        seed: int,
+        tuple_db: TupleDB,
+        buffer_size: int = 100,
+        write_buffer_on_done: bool = True,
+    ):
+        """
+        Wrapper for recording transition tuples (s,a,s',r) either to current disk or to a data base.
+        NOTE: Currently only available for single-agent RL!
+
+        Args:
+            env (gym.Env): The gym environment to be wrapped.
+            tuple_db (TupleDB): The database for storing the transition tuples.
+            buffer_size (int, optional): The maximum size of the tuple buffer. Defaults to 100.
+            write_buffer_on_done (bool, optional): Whether to always write out the buffer on a done state.
+                Defaults to True.
+        """
+        super().__init__(env)
+
+        if len(env.unwrapped.controllers) > 1:
+            raise ValueError("RecordTransitionsWrapper cannot handle more than 1 agent")
+
+        self.tuple_db = tuple_db
+        self.buffer_size = buffer_size
+        self.write_buffer_on_done = write_buffer_on_done
+
+        self.tuple_buffer: List[RLTuple] = []
+
+        # next obs structure ensures that (s, a, r, s') are collected in the correct order
+        # necessary for d3rlpy library
+        self.current_obs = None
+
+        self.tuple_db.create_run(scenario_id, run_config, seed)
+
+    def step(self, action):
+
+        next_obs, reward, terminated, truncated, info = self.env.step(action)
+
+        # TODO: support raw information in the future as well
+        assert isinstance(self.current_obs, np.ndarray) and isinstance(
+            action, np.ndarray
+        ), "observation and action can only be numpy arrays for now"
+
+        current_tuple = RLTuple(
+            observation=self.current_obs,
+            action=action,
+            reward=reward,
+            terminal=terminated,
+            timeout=truncated,
+        )
+
+        self.tuple_buffer.append(current_tuple)
+
+        if len(self.tuple_buffer) >= self.buffer_size or ((terminated or truncated) and self.write_buffer_on_done):
+            self.tuple_db.record_tuples(self.tuple_buffer)
+            self.tuple_buffer = []
+
+        self.current_obs = next_obs
+
+        return next_obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+
+        self.current_obs = obs
+
+        return obs, info
+
+
 class MultiAgentWrapper(gym.Wrapper):
     def __init__(self, env):
         """
@@ -218,12 +349,9 @@ class MultiAgentWrapper(gym.Wrapper):
         obs, obs_info = self.env.reset(seed=seed, options=options)
         obs = self._unpack_obs(obs)
         obs = ctrl_dict_to_list(obs)
+        return obs, obs_info
 
-        # We do not return the obs_info here as it is more complicated to handle in the DummyVecEnv provided by the
-        # on-policy repository
-        return obs
-
-    def step(self, actions: List[np.ndarray]) -> Tuple[List[np.ndarray], List[float], bool, bool, dict]:
+    def step(self, action: List[np.ndarray]) -> Tuple[List[np.ndarray], List[float], bool, bool, dict]:
         """
         Advance the environment (in our case, the power system) by one step in time by applying control actions to
         discrete-time dynamics and updating data sources. Handled within the System class. The actions of the RL agent
@@ -233,7 +361,7 @@ class MultiAgentWrapper(gym.Wrapper):
         agents.
 
         Args:
-            actions (List[np.ndarray]): actions of RL agents (here as a list of numpy arrays)
+            action (List[np.ndarray]): actions of RL agents (here as a list of numpy arrays)
 
         Returns:
             Tuple: tuple containing:
@@ -248,7 +376,7 @@ class MultiAgentWrapper(gym.Wrapper):
         """
         # transform the actions from a list of numpy arrays to a  nested dictionary
         # {agent_id: {node_id: {element_id: action, ...}, ...}, ...} with the original keys from the ControlEnv
-        action_dict = list_to_ctrl_dict(actions, self.original_action_keys)
+        action_dict = list_to_ctrl_dict(action, self.original_action_keys)
 
         for ctrl in action_dict:
             dummy_action = self.controllers[ctrl].input_space.sample()
@@ -257,7 +385,7 @@ class MultiAgentWrapper(gym.Wrapper):
             for n_id, n_act in dummy_action.items():
                 for el_id, el_act in n_act.items():
                     num_act = el_act.shape[0]
-                    dummy_action[n_id][el_id] = actions[act_count : act_count + num_act]
+                    dummy_action[n_id][el_id] = action[act_count : act_count + num_act]
                     act_count = act_count + num_act
         # step original ControlEnv with the transformed action_dict
         obs, rewards, terminated, truncated, info = self.env.step(action_dict)

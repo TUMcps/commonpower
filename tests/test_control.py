@@ -9,7 +9,7 @@ from commonpower.core import System, Bus
 from commonpower.models.components import *
 from commonpower.models.busses import *
 from commonpower.models.powerflow import *
-from commonpower.control.controllers import RLControllerSB3, OptimalController
+from commonpower.control.controllers import RLControllerSB3
 from commonpower.control.safety_layer.safety_layers import ActionProjectionSafetyLayer
 from commonpower.control.runners import SingleAgentTrainer, DeploymentRunner
 from commonpower.control.wrappers import SingleAgentWrapper
@@ -21,6 +21,8 @@ from commonpower.data_forecasting.base import DataProvider
 from commonpower.modelling import ModelHistory
 from commonpower.control.logging.loggers import TensorboardLogger
 from commonpower.control.logging.callbacks import *
+from commonpower.control.configs.algorithms import *
+from commonpower.control.safety_layer.penalties import *
 
 
 class TestControl(unittest.TestCase):
@@ -96,18 +98,11 @@ class TestControl(unittest.TestCase):
 
         agent1 = RLControllerSB3(
             name="agent1",
-            safety_layer=ActionProjectionSafetyLayer(penalty_factor=10.0),
+            safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
         )
 
         # set up configuration for the PPO algorithm
-        alg_config = {}
-        alg_config["total_steps"] = 1
-        alg_config["algorithm"] = PPO
-        alg_config["policy"] = "MlpPolicy"
-        alg_config["learning_rate"] = 0.0008
-        alg_config["device"] = "cpu"
-        alg_config["n_steps"] = int(horizon.total_seconds() // 3600)
-        alg_config["batch_size"] = 12
+        alg_config = SB3MetaConfig(total_steps=1, seed=1, algorithm=PPO, algorithm_config=SB3PPOConfig())
 
         # set up logger
         log_dir = "./tests/artifacts/test_run/"
@@ -138,7 +133,7 @@ class TestControl(unittest.TestCase):
         # params.
         agent2 = RLControllerSB3(
             name="pretrained_agent",
-            safety_layer=ActionProjectionSafetyLayer(penalty_factor=10.0),
+            safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=model_path,
         )
 

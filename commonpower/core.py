@@ -313,7 +313,11 @@ class System(ControllableModelEntity):
             return {ctrl_id: ctrl for ctrl_id, ctrl in self.controllers.items() if isinstance(ctrl, tuple(ctrl_types))}
 
     def create_env_func(
-        self, wrapper: gym.Wrapper = None, fixed_start: datetime = None, normalize_actions: bool = True
+        self,
+        wrapper: gym.Wrapper = None,
+        fixed_start: datetime = None,
+        normalize_actions: bool = True,
+        history: ModelHistory = None,
     ):
         """
         Creates an environment which encapsulates the power system in a way that RL algorithms can interact with it.
@@ -324,6 +328,7 @@ class System(ControllableModelEntity):
             (used for example to map from multi-agent environment to single-agent environment)
             fixed_start (datetime): whether to run on a fixed given day
             normalize_actions (bool): whether or not to normalize the action space
+            history (ModelHistory): logger
 
         Returns:
             wrapper(ControlEnv): environment instance
@@ -339,13 +344,14 @@ class System(ControllableModelEntity):
                 continuous_control=self.continuous_control,
                 fixed_start=fixed_start,
                 normalize_action_space=normalize_actions,
+                history=history,
             )
             if wrapper:
                 env = wrapper(env)
             return env
 
         self.env_func = init_env()
-        return init_env()
+        return self.env_func
 
     def global_observation_space(self, global_obs_mask: List[Tuple[Union[ModelEntity, list]]]):
         """
@@ -416,8 +422,8 @@ class System(ControllableModelEntity):
                         "Some of the given DataProviders have no overlap in their date ranges.",
                     )
 
-            # upper limit reduced by forecast horizon to not run into problems during update()
-            date_range[1] = date_range[1] - self.forecast_horizon
+            # upper limit reduced by control horizon to not run into problems during update() and forecasting
+            date_range[1] = date_range[1] - self.control_horizon
 
         else:  # if no data providers are defined
             date_range = [datetime(1900, 1, 1), datetime(2100, 12, 31)]
@@ -448,7 +454,11 @@ class System(ControllableModelEntity):
         return date
 
     def step(
-        self, obs: dict = None, rl_action_callback: Callable = None, history: ModelHistory = None
+        self,
+        obs: dict = None,
+        rl_action_callback: Callable = None,
+        rl_observation_callback: Callable = None,
+        history: ModelHistory = None,
     ) -> tuple[dict, dict, bool, bool, dict]:
         """
         Runs one time step of the power system simulation. This includes fixing the actions computed by the system's
@@ -459,6 +469,7 @@ class System(ControllableModelEntity):
         Args:
             obs (dict): dictionary of {controller_id: controller_observation}
             rl_action_callback (Callable): callback used to retrieve actions from RL controllers
+            rl_observation_callback (Callable): callback used to transform observation for RL controllers if required
             model_history (ModelHistroy, optional): Instance of ModelHistory to log the system model.
 
         Returns:
@@ -1104,6 +1115,20 @@ class Bus(Node):
             config (dict, optional): Configuration for defined model elements. Defaults to {}.
         """
         super().__init__(name, config)
+
+        self.stand_alone = True  # indicates if the bus is child of a StructureNode (energy community, P2P market)
+
+    def set_as_structure_member(self) -> None:
+        """
+        Sets a flag indicating that the bus is a member of some structure (e.g., energy community, P2P market).
+        """
+        self.stand_alone = False
+
+    def set_as_stand_alone(self) -> None:
+        """
+        Sets a flag indicating that the bus is stand-alone.
+        """
+        self.stand_alone = True
 
     def _get_additional_constraints(self) -> List[ModelElement]:
         """

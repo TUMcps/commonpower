@@ -7,10 +7,10 @@ import os
 import random
 import time
 import warnings
-from collections import deque
+from collections import OrderedDict, deque
 from datetime import datetime, timedelta
 from itertools import chain
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -18,14 +18,17 @@ import torch
 import wandb
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
-from commonpower.control.controller_utils import ArgsWrapper, t2n
+from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
+from commonpower.control.controller_utils import t2n
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
 from commonpower.control.logging.loggers import BaseLogger, TensorboardLogger
+from commonpower.control.wrappers import DeploymentWrapper
 from commonpower.core import System
 from commonpower.modelling import ModelHistory
 from commonpower.utils.cp_exceptions import InstanceError
@@ -106,7 +109,7 @@ class BaseRunner:
 
         self._run(n_steps)
 
-    def _run(n_steps: int = 24) -> None:
+    def _run(self, n_steps: int = 24) -> None:
         raise NotImplementedError
 
     def prepare_run(self):
@@ -162,7 +165,7 @@ class BaseRunner:
             None
 
         """
-        self.start_time = start_time
+        self.start_time = to_datetime(start_time)
 
     def system_feasible(self, n_checks: int = 1):
         """
@@ -270,7 +273,7 @@ class SingleAgentTrainer(BaseTrainer):
     def __init__(
         self,
         sys: System,
-        alg_config: dict,
+        alg_config: SB3MetaConfig,
         global_controller: OptimalController = OptimalController("global"),
         policy: BasePolicy = None,
         wrapper: gym.Wrapper = None,
@@ -293,7 +296,7 @@ class SingleAgentTrainer(BaseTrainer):
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using
                 a market node or a generator. Defaults to OptimalController("global").
-            alg_config (dict): configuration for the RL algorithm and policy to be trained
+            alg_config (SB3MetaConfig): configuration for the RL algorithm and policy to be trained
             policy (BasePolicy): policy instance (can be handed over to be retrained)
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
@@ -345,8 +348,21 @@ class SingleAgentTrainer(BaseTrainer):
 
         """
         self.prepare_run()
-        training_steps = self.alg_config["total_steps"]
-        self.policy.learn(total_timesteps=training_steps, callback=self.logger.log_function())
+        training_steps = self.alg_config.total_steps
+        episode_length = int(self.control_horizon / self.dt)
+        # Define logging interval based on config of the algorithm
+        if self.alg_config.algorithm == PPO:
+            log_int = int(self.alg_config.algorithm_config.n_steps / episode_length)
+        elif self.alg_config.algorithm == SAC:
+            log_int = int(episode_length / self.alg_config.algorithm_config.train_freq)
+        else:
+            log_int = 1
+            print("Warning: Logging interval not defined for this algorithm. Logging after each training step.")
+        if log_int < 1:
+            log_int = 1
+            print("Warning: Logging interval was infeasible. Logging after each training step.")
+
+        self.policy.learn(total_timesteps=training_steps, callback=self.logger.log_function(), log_interval=log_int)
         # store reference to model in controller
         for ctrl in self.sys.get_controllers(ctrl_types=[RLBaseController]).values():
             ctrl.save(self.policy, save_path=self.save_path)
@@ -364,18 +380,14 @@ class SingleAgentTrainer(BaseTrainer):
 
         """
         super().prepare_run()
-        TrainAlg = self.alg_config["algorithm"]
+        TrainAlg = self.alg_config.algorithm
         if not self.policy:
             self.policy = TrainAlg(
                 env=self.env,
-                policy=self.alg_config["policy"],
-                learning_rate=self.alg_config["learning_rate"],
-                device=self.alg_config["device"],
-                n_steps=self.alg_config["n_steps"],
-                batch_size=self.alg_config["batch_size"],
                 tensorboard_log=self.logger.get_log_dir(),
                 seed=self.seed,
                 verbose=2,
+                **self.alg_config.algorithm_config.model_dump(),  # convert pydantic Model to dictionary
             )
 
     def finish_run(self):
@@ -388,7 +400,7 @@ class DeploymentRunner(BaseRunner):
         self,
         sys: System,
         global_controller: OptimalController = OptimalController("global"),
-        alg_config: dict = None,
+        alg_config: Union[SB3MetaConfig, MAPPOBaseConfig] = None,
         wrapper: gym.Wrapper = None,
         forecast_horizon: timedelta = timedelta(hours=24),
         control_horizon: timedelta = timedelta(hours=24),
@@ -407,7 +419,8 @@ class DeploymentRunner(BaseRunner):
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using
                 a market node or a generator. Defaults to OptimalController("global").
-            alg_config (dict): configuration for the RL algorithm and policy to be trained
+            alg_config (Union[SB3MetaConfig, MAPPOBaseConfig]): configuration for the RL algorithm and policy to be
+                trained
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             forecast_horizon (timedelta): amount of time that the controller looks into the future
@@ -452,13 +465,27 @@ class DeploymentRunner(BaseRunner):
         """
         self.prepare_run()
         # run
-        obs, _ = self.sys.observe()
+        obs, _ = self.env.reset()
 
         for step in tqdm(range(n_steps)):
-            obs, reward, terminated, _, info = self.sys.step(obs=obs, history=self.history)
+            if self.rl_controllers:
+                # we loop through all RL controllers to compute their actions given the current state. The union of all
+                # actions will then be passed on to the Gym environment in the required format.
+                rl_actions = OrderedDict()
+                for ctrl_id, rl_ctrl in self.rl_controllers.items():
+                    ctrl_obs = obs[ctrl_id]
+                    rl_actions[ctrl_id], _ = rl_ctrl.compute_control_input(obs=ctrl_obs, input_callback=None)
+            else:
+                # only optimal controllers --> actions will be computed in step() function of System
+                rl_actions = None
+
+            obs, reward, terminated, _, info = self.env.step(action=rl_actions)
 
             if terminated:
-                self.sys.reset(self.sys.sample_start_date(fixed_start=self.fixed_start))
+                if self.rl_controllers:
+                    obs, _ = self.env.reset()
+                else:
+                    obs = self.sys.observe()
 
         self.finish_run()
 
@@ -472,24 +499,29 @@ class DeploymentRunner(BaseRunner):
 
         """
         super().prepare_run()
-        if self.rl_controllers:
-            self.env = self.sys.create_env_func(
-                self.wrapper, self.fixed_start, normalize_actions=self.normalize_actions
+        # ToDo: more elegant way to solve this?
+        if self.start_time is not None:
+            self.fixed_start = self.start_time
+        # We have to wrap the environment with a DeploymentWrapper to ensure compatibility
+        self.env = DeploymentWrapper(
+            self.sys.create_env_func(
+                self.wrapper, self.fixed_start, normalize_actions=self.normalize_actions, history=self.history
             )
-            # set train flag of RL runners to False
-            for rl_ctrl in self.rl_controllers.values():
-                rl_ctrl.set_mode("deploy")
-                # load RL policies
-                self.alg_config["seed"] = self.seed  # need to hand over the seed to re-load the policy
-                if not rl_ctrl.policy:
-                    rl_ctrl.load(env=self.env, config=self.alg_config)
+        )
+        # set train flag of RL runners to False
+        for rl_ctrl in self.rl_controllers.values():
+            rl_ctrl.set_mode("deploy")
+            # load RL policies
+            self.alg_config.seed = self.seed  # need to hand over the seed to re-load the policy
+            if not rl_ctrl.policy:
+                rl_ctrl.load(env=self.env, config=self.alg_config)
 
 
 class MAPPOTrainer(BaseTrainer):
     def __init__(
         self,
         sys: System,
-        alg_config: dict,
+        alg_config: MAPPOBaseConfig,
         global_controller: OptimalController = OptimalController("global"),
         wrapper: gym.Wrapper = None,
         logger: BaseLogger = None,
@@ -512,7 +544,7 @@ class MAPPOTrainer(BaseTrainer):
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using
                 a market node or a generator. Defaults to OptimalController("global").
-            alg_config (dict): configuration for the RL algorithm and policy to be trained
+            alg_config (MAPPOBaseConfig): configuration for the RL algorithm and policy to be trained
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             logger (BaseLogger): object for handling training logs
@@ -550,7 +582,7 @@ class MAPPOTrainer(BaseTrainer):
         self.log_function = logger.get_log_function()
 
         all_args = alg_config
-        self.all_args = ArgsWrapper(all_args)
+        self.all_args = all_args
         # set device
         self._set_device()
         # check other arguments according to algorithm:
@@ -778,7 +810,7 @@ class MAPPOTrainer(BaseTrainer):
         """
         # Seeding is considered within DummyVecEnv/SubProcVecEnv through seeds initialized previously
         # by calling self.envs.seed(seed=self.seed)
-        obs = self.envs.reset()
+        obs, _ = self.envs.reset()
 
         share_obs = []
         for o in obs:
@@ -918,7 +950,7 @@ class MAPPOTrainer(BaseTrainer):
 
         """
         eval_episode_rewards = []
-        eval_obs = self.eval_envs.reset()
+        eval_obs, _ = self.eval_envs.reset()
 
         eval_rnn_states = np.zeros(
             (self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32
@@ -1146,8 +1178,6 @@ class MAPPOTrainer(BaseTrainer):
         self.n_eval_rollout_threads = self.all_args.n_eval_rollout_threads
         self.use_linear_lr_decay = self.all_args.use_linear_lr_decay
         self.hidden_size = self.all_args.hidden_size
-        self.use_wandb = self.all_args.use_wandb
-        self.use_render = self.all_args.use_render
         self.recurrent_N = self.all_args.recurrent_N
 
         # interval

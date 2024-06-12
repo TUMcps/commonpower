@@ -8,7 +8,7 @@ from typing import List
 import pyomo.environ as pyo
 from pyomo.core import ConcreteModel, Expression, quicksum
 
-from commonpower.core import Bus, Node
+from commonpower.core import Bus, Node, StructureNode
 from commonpower.modelling import ElementTypes as et
 from commonpower.modelling import MIPExpressionBuilder, ModelElement
 from commonpower.utils.cp_exceptions import EntityError
@@ -57,22 +57,6 @@ class RTPricedBus(Bus):
         ]
 
         return model_elements
-
-    def __init__(self, name: str, config: dict = {}) -> None:
-        super().__init__(name, config)
-        self.stand_alone = True  # indicates if the bus is child of a StructureNode (energy community, P2P market)
-
-    def set_as_structure_member(self) -> None:
-        """
-        Sets a flag indicating that the bus is a member of some structure (e.g., energy community, P2P market).
-        """
-        self.stand_alone = False
-
-    def set_as_stand_alone(self) -> None:
-        """
-        Sets a flag indicating that the bus is stand-alone.
-        """
-        self.stand_alone = True
 
     def _get_additional_constraints(self) -> List[ModelElement]:
         """
@@ -150,9 +134,12 @@ class RTPricedBusLinear(Bus):
             cost = \\sum_{i \\in components} cost_i + p * psi
         """
         if self.nodes:
-            return quicksum([n.cost_fcn(model, t) for n in self.nodes]) + (
-                self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau
-            )
+            if self.stand_alone:
+                return quicksum([n.cost_fcn(model, t) for n in self.nodes]) + (
+                    self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau
+                )
+            else:
+                return quicksum([n.cost_fcn(model, t) for n in self.nodes])
         else:
             return 0.0
 
@@ -280,3 +267,83 @@ class ExternalGrid(Bus):
 
     def add_node(self, node: Node) -> Node:
         raise NotImplementedError("External grid nodes cannot have sub-nodes")
+
+
+class EnergyCommunity(StructureNode):
+    """
+    Structure node representing an energy community.
+
+    .. runblock:: pycon
+
+        >>> from commonpower.extensions.cost_allocation import EnergyCommunity
+        >>> EnergyCommunity.info()
+
+    """
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        # define buying and selling price
+        model_elements = [
+            ModelElement("p_sum", et.VAR, "sum of active power within coalition", pyo.Reals, bounds=[-1e6, 1e6]),
+            ModelElement("psib", et.DATA, "buying price", pyo.Reals),
+            ModelElement("psis", et.DATA, "selling price", pyo.Reals),
+        ]
+
+        return model_elements
+
+    def _get_additional_constraints(self) -> List[ModelElement]:
+        mb = MIPExpressionBuilder(self)
+        mb.from_geq("p_sum", 0, "p_eb", is_new=True)
+
+        def p_sum_fcn(model, t):
+            return (
+                quicksum([n.get_pyomo_element("p", model)[t] for n in self.nodes])
+                == self.get_pyomo_element("p_sum", model)[t]
+            )
+
+        p_sum_c = ModelElement("p_sum_c", et.CONSTRAINT, "sum of active power within coalition", expr=p_sum_fcn)
+
+        return [p_sum_c] + mb.model_elements
+
+    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+        """
+        .. math::
+            cost = \\sum_{j \\in coalition} \\sum_{i \\in components} cost_ji
+            + \\sum_{j \\in coalition} (p_j) * psi
+        """
+        if self.nodes:
+            return (
+                quicksum([n.cost_fcn(model, t) for n in self.nodes])
+                + (
+                    self.get_pyomo_element("p_sum", model)[t]
+                    * (1 - self.get_pyomo_element("p_eb", model)[t])
+                    * self.get_pyomo_element("psis", model)[t]
+                    * self.tau
+                )
+                + (
+                    self.get_pyomo_element("p_sum", model)[t]
+                    * self.get_pyomo_element("p_eb", model)[t]
+                    * self.get_pyomo_element("psib", model)[t]
+                    * self.tau
+                )
+            )
+        else:
+            return 0.0
+
+    def add_node(self, node: Bus) -> Node:
+        """
+        Adds a subordinate bus.
+        The added node's id is set according to its position in the model hierarchy.
+        The passed node is flagged as structure member.
+
+        Args:
+            node (Bus): Bus istance to add.
+
+        Returns:
+            Node: Node instance.
+        """
+
+        assert isinstance(node, Bus), "Only buses can be direct children of an energy community"
+
+        super().add_node(node)
+        node.set_as_structure_member()

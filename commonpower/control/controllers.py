@@ -17,6 +17,7 @@ from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
+from commonpower.control.controller_utils import single_step_cost_callback
 from commonpower.core import Node, System
 from commonpower.modelling import ControllableModelEntity, ElementTypes
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
@@ -29,7 +30,7 @@ class BaseController:
         name: str,
         obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
         global_obs_elements: List[Tuple[Union[Node, list]]] = None,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
     ):
         """
         This is the base class for any controller type that will be implemented. It manages assignment of controllable
@@ -45,8 +46,7 @@ class BaseController:
             the observation of the controller.
             global_obs_elements (List[Tuple[Union[Node, list]]]): additional model elements (can also be from outside \
             the controlled entities) that should be observed.
-            cost_callback (Callable): function used within the cost function of the controller to compute additional \
-            cost terms.
+            cost_callback (Callable): function used to compute the stage cost (step cost) of the controller
 
         Returns:
             BaseController
@@ -300,9 +300,7 @@ class BaseController:
 
     def get_cost(self, sys_inst: ConcreteModel) -> float:
         """
-        Compute control cost for one time step based on 1) cost resulting from solution of optimization problem in Pyomo
-        model for the controllable entities assigned to this controller and 2) the cost callback to add additional
-        terms.
+        Compute control cost for one time step
 
         Args:
             sys_inst (ConcreteModel): current Pyomo model with solution from optimization
@@ -311,14 +309,7 @@ class BaseController:
             float: control cost for one time step
 
         """
-        # ToDo: Need to adjust if we ever have an action horizon > 1 time step
-        cost_values = [n.get_value(sys_inst, "cost") for n in self.top_level_nodes]
-        cost_values = [item for sublist in cost_values for item in sublist]
-        ctrl_cost = sum(cost_values)
-
-        if self.cost_callback:
-            ctrl_cost += self.cost_callback(ctrl=self, sys_inst=sys_inst)
-        return ctrl_cost
+        return self.cost_callback(ctrl=self, sys_inst=sys_inst)
 
     def set_obs_mask(
         self,
@@ -416,7 +407,7 @@ class OptimalController(BaseController):
     def __init__(
         self,
         name: str,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
     ):
@@ -526,7 +517,7 @@ class RLBaseController(BaseController):
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
         pretrained_policy_path: str = None,
     ):
         """
@@ -646,12 +637,15 @@ class RLBaseController(BaseController):
             verified_action = self.clip_to_bounds(verified_action)
             self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
         else:
-            # ToDo: generalize this?
-            obs = self.flatten_obs(obs)
-            action = self.predict_action(obs)
-            action = self.act_array_to_dict(action)
-            if self.denormalize_inputs:
-                action = self._denormalize_input(action)
+            if input_callback is None:
+                # we actually want to predict the action (called by DeploymentRunner._run())
+                action = self.predict_action(obs)
+                action = self.act_array_to_dict(action)
+                if self.denormalize_inputs:
+                    action = self._denormalize_input(action)
+            else:
+                # we just pass the action on
+                action = input_callback(self.name)
             verified_action, action_corrected, safety_penalty = self.safety_layer.compute_safe_action(action)
             # clip actions to bounds to account for numerical errors
             verified_action = self.clip_to_bounds(verified_action)
@@ -739,21 +733,13 @@ class RLControllerSB3(RLBaseController):
                 "No load path for pre-trained policy! Needs to be handed over in constructor (pretrained_policy_path)"
             )
         # has to be implemented by subclasses
-        TrainAlg = config["algorithm"]
+        TrainAlg = config.algorithm
         self.policy = TrainAlg(
-            env=env,
-            policy=config["policy"],
-            device=config["device"],
-            n_steps=config["n_steps"],
-            normalize_advantage=False,
-            learning_rate=config["learning_rate"],
-            batch_size=config["batch_size"],
-            seed=config["seed"],
-            policy_kwargs=policy_kwargs,
+            env=env, seed=config.seed, **config.algorithm_config.model_dump()  # pydantic Model to dictionary
         )
         self.policy = self.policy.load(self.load_path)
         # ugly hack to overwrite the seed in in self.policy.load (which will be done with the seed used during training)
-        set_random_seed(seed=config["seed"])
+        set_random_seed(seed=config.seed)
 
     def predict_action(self, obs: np.ndarray, deterministic: bool = True) -> np.ndarray:
         """
@@ -786,7 +772,7 @@ class RLControllerMA(RLBaseController):
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
-        cost_callback: Callable = None,
+        cost_callback: Callable = single_step_cost_callback,
         pretrained_policy_path: str = None,
     ):
         super().__init__(
@@ -833,9 +819,6 @@ class RLControllerMA(RLBaseController):
             None
 
         """
-        from commonpower.control.controller_utils import ArgsWrapper
-
-        config = ArgsWrapper(config)
         self.policy_kwargs = config
         self._check_alg_config()
         share_observation_space = (

@@ -1,6 +1,6 @@
 [project]
 name = "commonpower"
-version = "0.1.0"
+version = "0.2.0"
 authors = [
   { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
   { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
@@ -36,11 +36,12 @@ dependencies = [
   "stable-baselines3",
   "pandapower",
   "tqdm",
+  "pydantic",
 ]
 
 [project.optional-dependencies]
 ci = ["pytest", "pandapower"]
-full = ["jupyter", "pandapower"]
+full = ["jupyter", "pandapower", "pymongo"]
 docs = [
   "myst_parser", 
   "sphinx_autodoc_typehints", 
@@ -48,6 +49,7 @@ docs = [
   "sphinx_rtd_theme", 
   "sphinx_autorun"
 ]
+tuple_db = ["pymongo"]
 
 [project.urls]
 "Homepage" = "https://github.com/TUMcps/commonpower"
