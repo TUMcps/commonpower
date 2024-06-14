@@ -18,7 +18,6 @@ import pandas as pd
 from pyomo.core import ConcreteModel, Expression, Objective, Set, quicksum, value
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
-from randomtimestamp import randomtimestamp
 
 from commonpower.control.environments import ControlEnv
 from commonpower.data_forecasting import DataProvider
@@ -449,7 +448,10 @@ class System(ControllableModelEntity):
                 raise EntityError(self, "Fixed start is not within the date range of the provided data providers.")
             date = fixed_start
         else:
-            date = randomtimestamp(start=self.date_range[0], end=self.date_range[1])
+            date = self.date_range[0] + timedelta(
+                # Get a random amount of seconds between `start` and `end`
+                seconds=random.randint(0, int((self.date_range[1] - self.date_range[0]).total_seconds())),
+            )
             date = date.replace(hour=0, minute=0, second=0, microsecond=0)  # set to start of day
         return date
 
