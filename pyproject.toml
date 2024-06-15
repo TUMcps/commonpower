@@ -1,6 +1,6 @@
 [project]
 name = "commonpower"
-version = "0.2.0"
+version = "0.2.1"
 authors = [
   { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
   { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
@@ -31,7 +31,6 @@ dependencies = [
   "matplotlib",
   "gurobipy",
   "pyomo",
-  "randomtimestamp",
   "prettytable",
   "stable-baselines3",
   "pandapower",
