@@ -15,6 +15,7 @@ from typing import List, Tuple, Union
 import gymnasium as gym
 import numpy as np
 import torch
+import wandb
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 from stable_baselines3 import PPO, SAC
@@ -22,7 +23,6 @@ from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
-import wandb
 from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
 from commonpower.control.controller_utils import t2n
 from commonpower.control.controllers import OptimalController, RLBaseController
@@ -479,9 +479,9 @@ class DeploymentRunner(BaseRunner):
                 # only optimal controllers --> actions will be computed in step() function of System
                 rl_actions = None
 
-            obs, reward, terminated, _, info = self.env.step(action=rl_actions)
+            obs, reward, terminated, truncated, info = self.env.step(action=rl_actions)
 
-            if terminated:
+            if terminated or truncated:
                 if self.rl_controllers:
                     obs, _ = self.env.reset()
                 else:
