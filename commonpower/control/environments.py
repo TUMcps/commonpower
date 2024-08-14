@@ -50,6 +50,9 @@ class ControlEnv(gym.Env):
         self.normalize_actions = normalize_action_space
         self.system_history = history
 
+        # training or deployment?
+        self.train = True
+
         # ToDo: shared observation space?
         self.observation_space = self._get_observation_space()
         if self.normalize_actions:
@@ -65,6 +68,15 @@ class ControlEnv(gym.Env):
         self.fixed_start = fixed_start
 
         self.n_steps = 0
+
+    def set_mode(self, mode: str):
+        # set train flag of RL runners to False
+        for ctrl in self.controllers.values():
+            ctrl.set_mode(mode)
+        if mode == "train":
+            self.train = True
+        else:
+            self.train = False
 
     def step(self, action: Union[OrderedDict, None]) -> Tuple[dict, dict, bool, bool, dict]:
         """
@@ -160,7 +172,23 @@ class ControlEnv(gym.Env):
 
         self.n_steps = 0
         reset_time = self.sys.sample_start_date(self.fixed_start)
-        self.sys.reset(reset_time)
+        if self.train:
+            self.sys.reset(reset_time)
+        else:
+            # environment is already reset once in deployment runner. We only have to reset it once more her
+            # in case we use pre-trained RL policies (load them from a directory)
+            if len(self.controllers) > 0:
+                # check if we are working with pre-trained policies
+                pretrained_controllers = [getattr(ctrl, 'load_path') is not None for ctrl in self.controllers.values()]
+                only_pretrained_controllers = all(pretrained_controllers)
+                no_pretrained_controllers = not any(pretrained_controllers)
+                if not (only_pretrained_controllers or no_pretrained_controllers):
+                    raise ValueError("The controllers all have to be either pre-trained or not. Mixing not possible.")
+                # we have to reset the system again because when loading the policies with single-agent RL,
+                # the env is seeded...
+                if only_pretrained_controllers:
+                    self.sys.reset(reset_time)
+
         obs, obs_info = self.sys.observe()
         # extract only the info for the RL controllers
         obs = {agent: agent_obs for agent, agent_obs in obs.items() if agent in self.controllers.keys()}
