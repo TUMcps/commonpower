@@ -508,6 +508,8 @@ class DeploymentRunner(BaseRunner):
                 self.wrapper, self.fixed_start, normalize_actions=self.normalize_actions, history=self.history
             )
         )
+        # set train flag of environment to False
+        self.env.unwrapped.set_mode("deploy")
         # set train flag of RL runners to False
         for rl_ctrl in self.rl_controllers.values():
             rl_ctrl.set_mode("deploy")
