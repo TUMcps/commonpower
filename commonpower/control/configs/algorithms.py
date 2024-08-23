@@ -16,6 +16,7 @@ class SB3PPOConfig(SB3AlgorithmBaseConfig):
     use_sde: bool = False  # SB3 PPO default
     sde_sample_freq: int = -1  # SB3 PPO default
     n_epochs: int = 10  # SB3 PPO default
+    gamma: float = 0.99  # SB3 PPO default
     gae_lambda: float = 0.95  # SB3 PPO default
     clip_range: float = 0.2  # SB3 PPO default
     clip_range_vf: float = None  # SB3 PPO default

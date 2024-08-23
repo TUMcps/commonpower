@@ -1,6 +1,6 @@
 [project]
 name = "commonpower"
-version = "0.2.1"
+version = "0.2.2"
 authors = [
   { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
   { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
@@ -36,6 +36,7 @@ dependencies = [
   "pandapower",
   "tqdm",
   "pydantic",
+  "numpy <= 1.26"
 ]
 
 [project.optional-dependencies]
