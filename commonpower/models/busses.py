@@ -256,7 +256,7 @@ class ExternalGrid(Bus):
 
     .. runblock:: pycon
 
-        >>> from commonpower.models.components import ExternalGrid
+        >>> from commonpower.models.busses import ExternalGrid
         >>> ExternalGrid.info()
 
     """
@@ -275,7 +275,7 @@ class EnergyCommunity(StructureNode):
 
     .. runblock:: pycon
 
-        >>> from commonpower.extensions.cost_allocation import EnergyCommunity
+        >>> from commonpower.models.busses import EnergyCommunity
         >>> EnergyCommunity.info()
 
     """

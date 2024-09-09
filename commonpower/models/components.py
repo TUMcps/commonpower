@@ -1081,3 +1081,25 @@ class ESSLinear(Component):
         dyn = ModelElement("dynamic_fcn", et.CONSTRAINT, "dynamic function", expr=dynamic_fcn)
 
         return [dyn]
+
+
+class Calendar(Component):
+    """
+    Calendar component. Simply adds time information to the model.
+
+    .. runblock:: pycon
+
+        >>> from commonpower.models.components import Calendar
+        >>> Calendar.info()
+
+    """
+
+    CLASS_INDEX = "cal"
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        model_elements = [
+            ModelElement("season", et.DATA, "season", domain=pyo.NonNegativeIntegers),
+            ModelElement("is_weekend", et.DATA, "is weekend", domain=pyo.Binary),
+        ]
+        return model_elements
