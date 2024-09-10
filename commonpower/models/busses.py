@@ -249,6 +249,93 @@ class TradingBusLinear(Bus):
         raise NotImplementedError("Trading busses cannot have sub-nodes")
 
 
+class CarbonAwareTradingBus(TradingBus):
+    """
+    Carbon Aware Trading Bus.
+
+    .. runblock:: pycon
+
+        >>> from commonpower.models.busses import CarbonAwareTradingBus
+        >>> CarbonAwareTradingBus.info()
+
+    """
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        model_elements = super()._get_model_elements()
+
+        model_elements += [
+            ModelElement("ci", et.DATA, "carbon intensity", pyo.NonNegativeReals),
+            ModelElement("a", et.CONSTANT, "cost parameter a", pyo.NonNegativeReals),
+            ModelElement("b", et.CONSTANT, "cost parameter b", domain=pyo.NonNegativeIntegers, bounds=(1, 2)),
+        ]
+
+        return model_elements
+
+    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+        """
+        .. math::
+            cost = (-p * psis * p_{es} -p * psib * (1 - p_{es})) + (a * p^b) / ci
+
+        Note that ci >= 0 for carbon intensity and p represents active power.
+        """
+        return (
+            -(
+                self.get_pyomo_element("p", model)[t]
+                * (1 - self.get_pyomo_element("p_es", model)[t])
+                * self.get_pyomo_element("psib", model)[t]
+                * self.tau
+            )
+            - (
+                self.get_pyomo_element("p", model)[t]
+                * self.get_pyomo_element("p_es", model)[t]
+                * self.get_pyomo_element("psis", model)[t]
+                * self.tau
+            )
+        ) + (
+            self.get_pyomo_element("a", model)
+            * self.get_pyomo_element("p", model)[t] ** self.get_pyomo_element("b", model)
+        ) / self.get_pyomo_element(
+            "ci", model
+        )[
+            t
+        ] * self.tau
+
+
+class CarbonAwareTradingBusLinear(TradingBusLinear):
+    """
+    Carbon Aware Bus which assumes selling and buying prices are identical.
+
+    .. runblock:: pycon
+
+        >>> from commonpower.models.busses import CarbonAwareTradingBusLinear
+        >>> CarbonAwareTradingBusLinear.info()
+
+    """
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        model_elements = super()._get_model_elements()
+
+        model_elements += [
+            ModelElement("ci", et.DATA, "carbon intensity", pyo.NonNegativeReals),
+            ModelElement("a", et.CONSTANT, "cost parameter a", pyo.NonNegativeReals),
+            ModelElement("b", et.CONSTANT, "cost parameter b", domain=pyo.NonNegativeIntegers, bounds=(1, 2)),
+        ]
+
+        return model_elements
+
+    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+        """
+        .. math::
+            cost = - p * psi + (a * p^b) / ci)
+        """
+        return (-self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau) + (
+            self.get_pyomo_element("a", model)
+            * self.get_pyomo_element("p", model)[t] ** self.get_pyomo_element("b", model)
+        ) * self.tau
+
+
 class ExternalGrid(Bus):
     """
     Bus with a connection to an external grid.

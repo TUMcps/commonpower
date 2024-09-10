@@ -655,6 +655,31 @@ class System(ControllableModelEntity):
 
         return all_children
 
+    def get_all_data_providers(self, node=None, provider=None) -> list[DataProvider]:
+        """
+        Recursively retrieves all data providers associated with a given node and its children.
+
+        Args:
+            node (Node): The node to retrieve data providers from.
+            provider (list[DataProvider], optional): The list of data providers \
+                (only used for recursion). Defaults to None.
+
+        Returns:
+            list[DataProvider]: A list of all data providers associated with the node.
+        """
+        providers = []
+        node = self if node is None else node
+        if provider is None:
+            provider = []
+        if hasattr(node, "data_providers"):
+            provider.extend(node.data_providers)
+        if len(node.get_children()) > 0:
+            for child in node.get_children():
+                providers.extend(self.get_all_data_providers(child, provider[:]))
+        else:
+            providers.extend(provider)
+        return providers
+
 
 class Line(ControllableModelEntity):
     CLASS_INDEX = "l"
