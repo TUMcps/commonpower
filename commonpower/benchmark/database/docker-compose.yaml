@@ -1,0 +1,34 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    environment:
+    # Just for testing purposes, should be changed in production
+      - MONGO_INITDB_ROOT_USERNAME=commonpower
+      - MONGO_INITDB_ROOT_PASSWORD=msL7oNANHHyMW3oM
+    ports:
+      - "27017:27017"
+    volumes:
+      - data:/data/db
+    networks:
+      - commonpower
+    restart: always
+
+  mongo-express:
+    image: mongo-express
+    container_name: mongo-express
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=commonpower
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=msL7oNANHHyMW3oM
+    ports:
+      - "8081:8081"
+    networks:
+      - commonpower
+    restart: always
+
+networks:
+  commonpower:
+
+volumes:
+  data:

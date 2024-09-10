@@ -32,7 +32,7 @@ class PandasDataSource(DataSource):
     def get_variables(self) -> List[str]:
         return self.data.columns.to_numpy()
 
-    def apply_to_column(self, column: str, fcn: callable) -> DataSource:
+    def apply_to_column(self, column: str, fcn: callable) -> PandasDataSource:
         """
         Allows applying a transformation to a column of the data (using pandas df.apply()).
 
@@ -69,6 +69,12 @@ class PandasDataSource(DataSource):
 
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         return self.data.loc[from_time:to_time].to_numpy()
+
+    def __len__(self) -> int:
+        """
+        Returns the number of elements in the dataset.
+        """
+        return len(self.data)
 
 
 class CSVDataSource(PandasDataSource):
@@ -193,6 +199,80 @@ class ArrayDataSource(DataSource):
 
     def get_date_range(self) -> List[datetime]:
         return self.date_range
+
+    def __len__(self) -> int:
+        """
+        Returns the number of elements in the dataset.
+        """
+        return int((self.date_range[1] - self.date_range[0]) / self.frequency)
+
+
+class CalendarDataSource(ArrayDataSource):
+    def __init__(
+        self,
+        date_range: List[datetime],
+        frequency: timedelta = timedelta(hours=1),
+        seasons_only: bool = False,
+    ):
+        """
+        DataSource which returns calendar information.
+
+        Args:
+            date_range (List[datetime]): Date range to simulate.
+            frequency (timedelta, optional): Frequency of data to simulate. Defaults to timedelta(hours=1).
+            seasons_only (bool, optional): If True, only the season information is returned, otherwise the exact month.
+                Defaults to False.
+        """
+
+        # Generate the time index for one year (e.g., 2023) with the specified frequency
+        time_index = pd.date_range(start=date_range[0], end=date_range[1], freq=frequency)
+
+        # Define the season mapping dictionary
+        if seasons_only:
+            season_mapping = {
+                12: 0,
+                1: 0,
+                2: 0,
+                3: 1,
+                4: 1,
+                5: 1,
+                6: 2,
+                7: 2,
+                8: 2,
+                9: 3,
+                10: 3,
+                11: 3,
+            }
+        else:
+            season_mapping = {
+                12: 12,
+                1: 1,
+                2: 2,
+                3: 3,
+                4: 4,
+                5: 5,
+                6: 6,
+                7: 7,
+                8: 8,
+                9: 9,
+                10: 10,
+                11: 11,
+            }
+
+        # Map the months to seasons and convert to numerical values (0: winter, 1: spring, 2: summer, 3: autumn)
+        season_array = pd.Series(time_index.map(lambda x: season_mapping[x.month])).to_numpy()
+
+        # for each value in the time index, convert to a boolean value indicating whether it is a weekend
+        weekend_arr = time_index.map(lambda x: 1 if x.dayofweek >= 5 else 0).to_numpy()
+
+        super().__init__(
+            values_dict={
+                "is_weekend": weekend_arr,
+                "season": season_array,
+            },
+            date_range=date_range,
+            frequency=frequency,
+        )
 
 
 class ConstantDataSource(DataSource):
