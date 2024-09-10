@@ -76,6 +76,7 @@ class PerfectKnowledgeForecaster(Forecaster):
         """
         super().__init__(frequency, horizon, timedelta())
 
+    @property
     def input_range(self) -> tuple[timedelta]:
         return (self.frequency, self.horizon)
 
@@ -105,6 +106,7 @@ class NoisyForecaster(Forecaster):
         assert noise_bounds[0] <= noise_bounds[1], "Lower noise bound must be lower than upper bound."
         self.b = noise_bounds
 
+    @property
     def input_range(self) -> tuple[timedelta]:
         return (self.frequency, self.horizon)
 

@@ -12,3 +12,5 @@ _*
 .pytest_cache
 .venv
 test_run/
+tuner/
+results/

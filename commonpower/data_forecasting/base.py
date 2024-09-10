@@ -53,6 +53,12 @@ class DataSource:
         """
         raise NotImplementedError
 
+    def __len__(self) -> int:
+        """
+        Returns the number of elements in the dataset.
+        """
+        raise NotImplementedError
+
 
 class Forecaster:
     def __init__(
@@ -77,6 +83,7 @@ class Forecaster:
         self.horizon = horizon
         self.look_back = look_back
 
+    @property
     def input_range(self) -> tuple[timedelta]:
         """
         Returns the min and max timedelta of observations which are required for the prediction.
@@ -102,13 +109,18 @@ class Forecaster:
 
 
 class DataProvider:
-    def __init__(self, data_source: DataSource, forecaster: Forecaster):
+    def __init__(self, data_source: DataSource, forecaster: Forecaster, observable_features: list[str] = None):
         """
         DataProviders combine a DataSource with a Forecaster.
 
         Args:
             data_source (DataSource): Data source to obtain data from.
             forecaster (Forecaster): Forecaster used for predictions.
+            observable_features (list[str], optional): List of features from the data source that are observable.
+                All other features are only used by the forecaster.
+                If not given, all existing features are observed.
+                Forecasts can only be generated for observable features. The forecaster must implement that accordingly.
+                Defaults to None.
         """
         assert forecaster.frequency == data_source.frequency, "Forecaster and data source must have the same frequency"
 
@@ -117,6 +129,7 @@ class DataProvider:
 
         self.horizon = forecaster.horizon
         self.frequency = forecaster.frequency
+        self.observable_features = observable_features
 
     def get_variables(self) -> List[str]:
         """
@@ -136,10 +149,18 @@ class DataProvider:
         """
         return self.data.get_date_range()
 
-    def _get_current_obs_and_forecast(self, time: datetime) -> List[np.ndarray, np.ndarray]:
-        current_obs = self.data(time, time)
+    def _filter_observed_features(self, data: np.ndarray) -> np.ndarray:
+        if self.observable_features is None:
+            return data
 
-        fc_input_range = self.forecaster.input_range()
+        indices = [i for i, var in enumerate(self.data.get_variables()) if var in self.observable_features]
+
+        return data[:, indices]
+
+    def _get_current_obs_and_forecast(self, time: datetime) -> List[np.ndarray, np.ndarray]:
+        current_obs = self._filter_observed_features(self.data(time, time))
+
+        fc_input_range = self.forecaster.input_range
         fc_input = self.data(time + fc_input_range[0], time + fc_input_range[1])
 
         fc = self.forecaster(fc_input)
@@ -168,7 +189,7 @@ class DataProvider:
 
         return obs_dict
 
-    def observation_bounds(self, time: Union[str, datetime]) -> dict[str, tuple(np.ndarray)]:
+    def observation_bounds(self, time: Union[str, datetime]) -> dict[str, tuple[np.ndarray]]:
         """
         Returns the observation bounds for all elements in the data source.
         The default is "guaranteed least-conservative bounds", i.e., the bounds are based on the absolute difference
