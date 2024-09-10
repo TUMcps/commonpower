@@ -38,13 +38,13 @@ dependencies = [
   "pydantic",
   "numpy <= 1.26",
   "jsonpickle",
+  "pymongo",
 ]
 
 [project.optional-dependencies]
-ci = ["pytest", "pandapower", "pymongo"]
-tuple_db = ["pymongo"]
+ci = ["pytest", "pandapower"]
 nn = ["torch", "ray[tune]", "hyperopt", "scikit-learn"]
-full = ["jupyter", "pandapower", "pymongo", "torch", "ray[tune]", "hyperopt", "scikit-learn"]
+full = ["jupyter", "pandapower", "torch", "ray[tune]", "hyperopt", "scikit-learn"]
 
 docs = [
   "myst_parser", 
