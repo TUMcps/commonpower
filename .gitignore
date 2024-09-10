@@ -8,6 +8,7 @@ docs/source/tutorials/saved_models/
 *.zip
 *build
 _*
+!__init__.py
 .pytest_cache
 .venv
 test_run/

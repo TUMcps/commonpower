@@ -36,11 +36,12 @@ dependencies = [
   "pandapower",
   "tqdm",
   "pydantic",
-  "numpy <= 1.26"
+  "numpy <= 1.26",
+  "jsonpickle",
 ]
 
 [project.optional-dependencies]
-ci = ["pytest", "pandapower"]
+ci = ["pytest", "pandapower", "pymongo"]
 full = ["jupyter", "pandapower", "pymongo"]
 docs = [
   "myst_parser", 
