@@ -32,7 +32,7 @@ class PandasDataSource(DataSource):
     def get_variables(self) -> List[str]:
         return self.data.columns.to_numpy()
 
-    def apply_to_column(self, column: str, fcn: callable) -> DataSource:
+    def apply_to_column(self, column: str, fcn: callable) -> PandasDataSource:
         """
         Allows applying a transformation to a column of the data (using pandas df.apply()).
 
@@ -69,6 +69,12 @@ class PandasDataSource(DataSource):
 
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         return self.data.loc[from_time:to_time].to_numpy()
+
+    def __len__(self) -> int:
+        """
+        Returns the number of elements in the dataset.
+        """
+        return len(self.data)
 
 
 class CSVDataSource(PandasDataSource):
@@ -193,6 +199,12 @@ class ArrayDataSource(DataSource):
 
     def get_date_range(self) -> List[datetime]:
         return self.date_range
+
+    def __len__(self) -> int:
+        """
+        Returns the number of elements in the dataset.
+        """
+        return int((self.date_range[1] - self.date_range[0]) / self.frequency)
 
 
 class CalendarDataSource(ArrayDataSource):

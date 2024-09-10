@@ -1,4 +1,5 @@
 import functools
+import os
 from datetime import datetime
 from typing import List, Union
 
@@ -88,3 +89,10 @@ def get_adjusted_cost(hist, entity):
         terminal_cost = np.sum(costs[-1][1][cost_id])
     output[-1] = terminal_cost
     return output
+
+
+def guaranteed_path(path):
+    dir_path = os.path.dirname(path)
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+    return path
