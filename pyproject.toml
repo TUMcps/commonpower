@@ -1,6 +1,6 @@
 [project]
 name = "commonpower"
-version = "0.2.2"
+version = "0.3.0"
 authors = [
   { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
   { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
