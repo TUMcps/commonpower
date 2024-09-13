@@ -102,6 +102,7 @@ class SimpleTransformer(Module):
         n_lookback: int,
         n_heads: int = 1,
         n_transformer_layers: int = 6,
+        dropout_p: float = 0.5,
     ):
         super().__init__()
 
@@ -112,13 +113,15 @@ class SimpleTransformer(Module):
         self.n_targets = n_targets
 
         self.layers = ModuleList()
-        transformer_layer = TransformerEncoderLayer(d_model=n_features, nhead=n_heads, batch_first=True)
+        transformer_layer = TransformerEncoderLayer(
+            d_model=n_features, nhead=n_heads, dropout=dropout_p, batch_first=True
+        )
         self.layers.append(TransformerEncoder(transformer_layer, num_layers=n_transformer_layers))  # encoder
         self.layers.append(Linear(n_features, n_targets))  # decoder
 
     def forward(self, x):
 
-        x, _ = self.layers[0](x)  # transformer
+        x = self.layers[0](x)  # transformer
         x = self.layers[1](x[:, -1, :].unsqueeze(1))  # linear of last element in sequence
         return x
 

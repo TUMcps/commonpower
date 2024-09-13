@@ -42,13 +42,13 @@ class NNTrainer(ray_tune.Trainable):
 
         return {'train_loss': loss.item()}
 
-    @classmethod
-    def test(cls, model: NNModule, val_loader: DataLoader, eval_metrics: list[EvalMetric]) -> dict[str, float]:
+    def test(self, model: NNModule, val_loader: DataLoader, eval_metrics: list[EvalMetric]) -> dict[str, float]:
         model.eval()
         targets = []
         outputs = []
         with torch.no_grad():
             for data, target in val_loader:
+                data, target = data.to(self.device), target.to(self.device)
                 output = model(data)
                 targets.append(target)
                 outputs.append(output)
@@ -70,6 +70,10 @@ class NNTrainer(ray_tune.Trainable):
         **kwargs,
     ):
 
+        self.train_loss_fcn = train_loss_fcn
+        self.eval_metrics = eval_metrics
+        self.device = device
+
         param_space = ParameterSpace(**config)
 
         self.torch_model_kwargs = param_space.model
@@ -90,10 +94,6 @@ class NNTrainer(ray_tune.Trainable):
             self.scheduler = scheduler(optimizer)
         else:
             self.scheduler = None
-
-        self.train_loss_fcn = train_loss_fcn
-        self.eval_metrics = eval_metrics
-        self.device = device
 
     def step(self) -> dict[str, float]:
         metric: dict = self._train_one_epoch()
@@ -139,7 +139,10 @@ def tune(
         str: The directory containing the best-performing model checkpoint.
     """
     tuner = ray_tune.Tuner(
-        trainable=ray_tune.with_parameters(NNTrainer, **dict(train_config)),
+        trainable=ray_tune.with_resources(
+            ray_tune.with_parameters(NNTrainer, **dict(train_config)),
+            resources={'cpu': 16, 'gpu': 1},
+        ),
         param_space=train_config.parameter_space.model_dump(),
         tune_config=tune_config,
         run_config=tune_run_config,
