@@ -29,7 +29,6 @@ class NNForecaster(Forecaster):
         self,
         model_class: NNModule.__class__,
         targets: list[str],
-        features: list[str] = None,
         frequency: timedelta = timedelta(hours=1),
         horizon: timedelta = timedelta(hours=12),
         feature_transform: Transformation = IdentityTransform(),
@@ -37,12 +36,16 @@ class NNForecaster(Forecaster):
     ):
         """
         Neural-Network-based Forecaster.
+
         All featues of the data source (including targets) will be used as model inputs.
         We make the assumption that all features besides the targets are static in the sense that they
         are available across the entire forecast horizon (e.g. time features).
         This is is necessary to apply the model iteratively.
         If this assumption cannot reasonably made in practice,
         the model output must cover the entire horizon in one step.
+
+        When the forecaster is deployed, we assume that the targets are the first "columns"
+        of the data source.
 
         Args:
             model_class (NNModule.__class__): Model class.
@@ -191,7 +194,8 @@ class NNForecaster(Forecaster):
             tmp_prediction: torch.Tensor = torch.tensor(self.target_transform(tmp_prediction)).float()
 
             tmp_data = data[t * self.model_output_steps : self.model.input_shape[0] + t * self.model_output_steps, :]
-            tmp_data[-self.model_output_steps :, self.target_idxs] = tmp_prediction
+            # we assume target variables are the first columns
+            tmp_data[-self.model_output_steps :, : tmp_prediction.shape[1]] = tmp_prediction
 
             tmp_prediction: torch.Tensor = self.model(tmp_data.reshape(1, *tmp_data.shape)).reshape(
                 self.model_output_steps, 1
