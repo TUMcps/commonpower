@@ -67,6 +67,42 @@ class PandasDataSource(DataSource):
         )
         return self
 
+    def create_time_features(self, month: bool = True, day: bool = True, hour: bool = True) -> PandasDataSource:
+        """
+        Creates time features from the datetime index.
+        The features are encoded cyclically via sin and cos transformations.
+        The created features are (if enabled):
+        month_sin, month_cos, day_sin, day_cos, hour_sin, hour_cos
+
+        Args:
+            month (bool, optional): If True, the month is added as a feature. Defaults to True.
+            day (bool, optional): If True, the weekday is added as a feature. Defaults to True.
+            hour (bool, optional): If True, the hour is added as a feature. Defaults to True.
+
+        Returns:
+            PandasDataSource: self
+        """
+
+        def encode_cyclic(x: int, max_val: int) -> tuple[float, float]:
+            """
+            Encodes a cyclic value (e.g., month, day, hour) into two values (sin, cos) to preserve cyclic information.
+            """
+            return np.sin(2 * np.pi * x / max_val), np.cos(2 * np.pi * x / max_val)
+
+        if month:
+            self.data["month_sin"], self.data["month_cos"] = zip(
+                *self.data.index.month.map(lambda x: encode_cyclic(x, 12))
+            )
+        if day:
+            self.data["day_sin"], self.data["day_cos"] = zip(
+                *self.data.index.weekday.map(lambda x: encode_cyclic(x, 7))
+            )
+        if hour:
+            self.data["hour_sin"], self.data["hour_cos"] = zip(
+                *self.data.index.hour.map(lambda x: encode_cyclic(x, 24))
+            )
+        return self
+
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         return self.data.loc[from_time:to_time].to_numpy()
 

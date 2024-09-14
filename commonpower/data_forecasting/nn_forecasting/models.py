@@ -94,7 +94,7 @@ class SimpleMLP(NNModule):
         return [self.n_ahead, self.n_targets]
 
 
-class SimpleTransformer(Module):
+class SimpleTransformer(NNModule):
     def __init__(
         self,
         n_features: int,
@@ -134,7 +134,7 @@ class SimpleTransformer(Module):
         return [self.n_ahead, self.n_targets]
 
 
-class SimpleLSTM(Module):
+class SimpleLSTM(NNModule):
     def __init__(
         self,
         n_features: int,
