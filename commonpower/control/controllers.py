@@ -641,8 +641,6 @@ class RLBaseController(BaseController):
                 # we actually want to predict the action (called by DeploymentRunner._run())
                 action = self.predict_action(obs)
                 action = self.act_array_to_dict(action)
-                if self.denormalize_inputs:
-                    action = self._denormalize_input(action)
             else:
                 # we just pass the action on
                 action = input_callback(self.name)
