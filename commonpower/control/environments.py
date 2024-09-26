@@ -57,8 +57,6 @@ class ControlEnv(gym.Env):
         self.observation_space = self._get_observation_space()
         if self.normalize_actions:
             self.action_space, self.original_action_space = self._get_normalized_action_space()
-            for ctrl in self.controllers.values():
-                ctrl.set_normalize_inputs(True)
         else:
             self.action_space = self._get_action_space()
 
