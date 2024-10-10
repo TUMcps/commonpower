@@ -101,7 +101,7 @@ class Benchmark:
         data_source_folder = storage_path / "data_sources"
         # Check if the data source folder exists
         if not data_source_folder.exists():
-            data_source_folder.mkdir()
+            data_source_folder.mkdir(parents=True)
         # Save all data sources to storage
         self.storage.handle_data_sources(self.system_node, data_source_folder)
 

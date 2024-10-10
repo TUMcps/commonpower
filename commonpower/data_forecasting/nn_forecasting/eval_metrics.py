@@ -51,6 +51,27 @@ class MeanAbsoluteError(EvalMetric):
         return torch.mean(torch.abs(y_true - y_pred)).item()
 
 
+class MeanSquaredError(EvalMetric):
+    """
+    Mean Squared Error (MSE) evaluation metric.
+    """
+
+    name: str = 'mse'
+
+    def __call__(self, y_true: Tensor, y_pred: Tensor) -> float:
+        """
+        Calculate the Mean Squared Error (MSE).
+
+        Args:
+            y_true (Tensor): The ground truth values.
+            y_pred (Tensor): The predicted values.
+
+        Returns:
+            float: The MSE value.
+        """
+        return torch.mean((y_true - y_pred) ** 2).item()
+
+
 class RootMeanSquaredError(EvalMetric):
     """
     Root Mean Squared Error (RMSE) evaluation metric.

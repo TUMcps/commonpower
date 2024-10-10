@@ -29,7 +29,6 @@ class NNForecaster(Forecaster):
         self,
         model_class: NNModule.__class__,
         targets: list[str],
-        features: list[str] = None,
         frequency: timedelta = timedelta(hours=1),
         horizon: timedelta = timedelta(hours=12),
         feature_transform: Transformation = IdentityTransform(),
@@ -38,11 +37,19 @@ class NNForecaster(Forecaster):
         """
         Neural-Network-based Forecaster.
 
+        All featues of the data source (including targets) will be used as model inputs.
+        We make the assumption that all features besides the targets are static in the sense that they
+        are available across the entire forecast horizon (e.g. time features).
+        This is is necessary to apply the model iteratively.
+        If this assumption cannot reasonably made in practice,
+        the model output must cover the entire horizon in one step.
+
+        When the forecaster is deployed, we assume that the targets are the first "columns"
+        of the data source.
+
         Args:
             model_class (NNModule.__class__): Model class.
             targets (list[str]): Target variables.
-            features (list[str], optional): Feature variables. If None, all available features will be used.
-                Defaults to None.
             frequency (timedelta, optional): Frequency of the data. Defaults to timedelta(hours=1).
             horizon (timedelta, optional): Forecast horizon. Defaults to timedelta(hours=12).
             feature_transform (Transformation, optional): Feature transformation. Defaults to IdentityTransform().
@@ -54,7 +61,6 @@ class NNForecaster(Forecaster):
 
         self.model_class = model_class
         self.targets = targets
-        self.features = features
         self.feature_transform = feature_transform
         self.target_transform = target_transform
 
@@ -66,6 +72,17 @@ class NNForecaster(Forecaster):
     def look_back(self) -> timedelta:
         # Model input includes current time step
         return (self.model.input_shape[0] - 1) * self.frequency
+
+    @property
+    def input_range(self) -> tuple[timedelta]:
+        """
+        Returns the min and max timedelta of observations which are required for the prediction.
+        To indicate a timestamp before the current time, the timedelta must be negative.
+
+        Returns:
+            tuple[timedelta]: (td before, td after)
+        """
+        return (-self.look_back, self.horizon)
 
     def with_model(self, model: NNModule) -> NNForecaster:
         """
@@ -101,6 +118,9 @@ class NNForecaster(Forecaster):
 
         self.model: NNModule = self.model_class(**param_space.model)
 
+        # default features are all variables (including targets)
+        self.features = data_source.get_variables()
+
         assert (self.horizon // self.frequency) % self.model.output_shape[
             0
         ] == 0, "Model output shape does not match the horizon."
@@ -111,7 +131,7 @@ class NNForecaster(Forecaster):
             self.features
         ), "Model input shape does not match the number of features."
         assert (
-            self.model.input_shape[0] == (self.input_range[1] - self.input_range[0]) // self.frequency + 1
+            self.model.input_shape[0] == (-self.input_range[0]) // self.frequency + 1
         ), "Model input shape does not match the forecaster input range."
 
         # If the model output is lower than the number of prediction steps, we apply the model iteratively
@@ -120,14 +140,13 @@ class NNForecaster(Forecaster):
 
         # Fit the transformations
 
-        # default features are all variables (including targets)
-        self.features = self.features or data_source.get_variables()
-
         complete_data = data_source(*data_source.get_date_range())
         feature_data = complete_data[
             :, [i for i, var in enumerate(data_source.get_variables()) if var in self.features]
         ]
-        target_data = complete_data[:, [i for i, var in enumerate(data_source.get_variables()) if var in self.targets]]
+
+        self.target_idxs = [i for i, var in enumerate(data_source.get_variables()) if var in self.targets]
+        target_data = complete_data[:, self.target_idxs]
 
         self.feature_transform.fit(feature_data)
         self.target_transform.fit(target_data)
@@ -154,25 +173,35 @@ class NNForecaster(Forecaster):
         # Convert to torch tensor
         data: torch.Tensor = torch.tensor(data).float()
 
+        # Inital data is [-look_back, 0]
+        tmp_data = data[: self.model.input_shape[0], :]
+
         # Make prediction
         # The reshape is necessary because the model expects a batch dimension
-        prediction: torch.Tensor = self.model(data.reshape(1, *data.shape)).reshape(self.model_output_steps, 1)
+        prediction: torch.Tensor = self.model(tmp_data.reshape(1, *tmp_data.shape)).reshape(self.model_output_steps, 1)
 
         # Apply inverse transformation
         out_prediction: ndarray = self.target_transform.inverse(prediction.detach().cpu().numpy())
 
         # For each iteration step, we
         # apply input transformation to prediction
-        # remove model_output_steps from the data tensor
-        # append the prediction to the data tensor
-        # make a prediction
+        # step data forward by one step
+        # replace the targets with the prediction
+        # make a new prediction
         # apply the inverse transformation
         tmp_prediction = out_prediction
-        for _ in range(1, self.iteration_steps):
+        for t in range(1, self.iteration_steps):
             tmp_prediction: torch.Tensor = torch.tensor(self.target_transform(tmp_prediction)).float()
-            data: torch.Tensor = torch.cat([data[self.model_output_steps :], tmp_prediction], dim=0)
-            tmp_prediction: torch.Tensor = self.model(data.reshape(1, *data.shape)).reshape(self.model_output_steps, 1)
+
+            tmp_data = data[t * self.model_output_steps : self.model.input_shape[0] + t * self.model_output_steps, :]
+            # we assume target variables are the first columns
+            tmp_data[-self.model_output_steps :, : tmp_prediction.shape[1]] = tmp_prediction
+
+            tmp_prediction: torch.Tensor = self.model(tmp_data.reshape(1, *tmp_data.shape)).reshape(
+                self.model_output_steps, 1
+            )
             tmp_prediction: ndarray = self.target_transform.inverse(tmp_prediction.detach().cpu().numpy())
+
             out_prediction = concatenate((out_prediction, tmp_prediction), axis=0)
 
         return out_prediction

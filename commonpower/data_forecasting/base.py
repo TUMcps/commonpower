@@ -129,7 +129,7 @@ class DataProvider:
 
         self.horizon = forecaster.horizon
         self.frequency = forecaster.frequency
-        self.observable_features = observable_features
+        self.observable_features = observable_features or data_source.get_variables()
 
     def get_variables(self) -> List[str]:
         """
@@ -185,7 +185,7 @@ class DataProvider:
 
         out = np.concatenate([current_obs, fc])
 
-        obs_dict = {var: out[:, i] for i, var in enumerate(self.data.get_variables())}
+        obs_dict = {var: out[:, i] for i, var in enumerate(self.observable_features)}
 
         return obs_dict
 
