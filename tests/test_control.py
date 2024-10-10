@@ -19,8 +19,8 @@ from commonpower.utils.param_initialization import *
 from commonpower.data_forecasting.data_sources import CSVDataSource
 from commonpower.data_forecasting.base import DataProvider
 from commonpower.modelling import ModelHistory
-from commonpower.control.logging.loggers import TensorboardLogger
-from commonpower.control.logging.callbacks import *
+from commonpower.control.logging_utils.loggers import TensorboardLogger
+from commonpower.control.logging_utils.callbacks import *
 from commonpower.control.configs.algorithms import *
 from commonpower.control.safety_layer.penalties import *
 

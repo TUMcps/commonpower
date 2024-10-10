@@ -27,7 +27,7 @@ from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfi
 from commonpower.control.controller_utils import t2n
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
-from commonpower.control.logging.loggers import BaseLogger, TensorboardLogger
+from commonpower.control.logging_utils.loggers import BaseLogger, TensorboardLogger
 from commonpower.control.wrappers import DeploymentWrapper
 from commonpower.core import System
 from commonpower.modelling import ModelHistory

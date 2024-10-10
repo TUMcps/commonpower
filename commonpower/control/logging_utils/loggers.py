@@ -6,7 +6,7 @@ from typing import Callable
 import wandb
 from stable_baselines3.common.logger import Logger, make_output_format
 
-from commonpower.control.logging.callbacks import (
+from commonpower.control.logging_utils.callbacks import (
     BaseCallback,
     MARLBaseCallback,
     MARLWandBCallback,

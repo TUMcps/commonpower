@@ -1,4 +1,4 @@
-from commonpower.control.logging.loggers import *
+from commonpower.control.logging_utils.loggers import *
 from pathlib import Path
 from commonpower.control.safety_layer.safety_layers import ActionProjectionSafetyLayer
 from commonpower.core import System
@@ -8,7 +8,7 @@ from commonpower.models.powerflow import *
 from commonpower.data_forecasting import *
 from commonpower.utils.param_initialization import *
 from commonpower.control.controllers import RLControllerMA, OptimalController
-from commonpower.control.logging.callbacks import *
+from commonpower.control.logging_utils.callbacks import *
 from commonpower.control.wrappers import MultiAgentWrapper
 from commonpower.control.runners import MAPPOTrainer, DeploymentRunner
 from commonpower.control.configs.algorithms import *
