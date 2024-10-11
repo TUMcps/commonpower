@@ -820,7 +820,9 @@ class RLControllerMA(RLBaseController):
         self.policy_kwargs = config
         self._check_alg_config()
         share_observation_space = (
-            env.share_observation_space[0] if self.policy_kwargs.use_centralized_V else self.flattened_obs_space
+            env.get_wrapper_attr("share_observation_space")[0]
+            if self.policy_kwargs.use_centralized_V
+            else self.flattened_obs_space
         )
 
         # policy network
