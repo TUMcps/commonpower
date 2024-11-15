@@ -5,7 +5,6 @@ from typing import List, Union
 
 import numpy as np
 import pandas as pd
-from pyomo.core import ConcreteModel
 
 # https://stackoverflow.com/questions/31174295/getattr-and-setattr-on-nested-subobjects-chained-properties/31174427
 
@@ -52,27 +51,6 @@ def to_datetime(
     # dts = [datetime.strptime(s, self.datetime_format) if isinstance(s, str) else s for s in args]
     dts = [pd.to_datetime(s, dayfirst=True) if isinstance(s, str) else s for s in args]
     return dts if len(args) > 1 else dts[0]
-
-
-def model_root(model: ConcreteModel) -> ConcreteModel:
-    """
-    Returns the root model of the given model by recursively calling model.parent_block().
-
-    Args:
-        model (ConcreteModel): Model.
-
-    Returns:
-        ConcreteModel: Root model.
-    """
-
-    def get_root(model: ConcreteModel) -> ConcreteModel:
-        root = model
-        parent = model.parent_block()
-        if parent is not None:
-            root = get_root(parent)
-        return root
-
-    return get_root(model)
 
 
 def get_adjusted_cost(hist, entity):

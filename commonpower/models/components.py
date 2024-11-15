@@ -9,8 +9,10 @@ import pyomo.environ as pyo
 from pyomo.core import ConcreteModel, Constraint, Expression
 
 from commonpower.core import Component
-from commonpower.modelling import ElementTypes as et
-from commonpower.modelling import MIPExpressionBuilder, ModelElement
+from commonpower.modeling.base import ElementTypes as et
+from commonpower.modeling.base import ModelElement
+from commonpower.modeling.mip_builder import MIPExpressionBuilder
+from commonpower.modeling.robust_constraints import ConstraintScenario
 
 
 class Load(Component):
@@ -114,7 +116,6 @@ class ConventionalGen(Component):
     def _get_model_elements(cls) -> List[ModelElement]:
         model_elements = [
             ModelElement("p", et.INPUT, "active power", pyo.NonPositiveReals),
-            ModelElement("q", et.INPUT, "reactive power", pyo.NonPositiveReals),
             ModelElement("a", et.CONSTANT, "cost parameter a"),
             ModelElement("b", et.CONSTANT, "cost parameter b"),
             ModelElement("c", et.CONSTANT, "cost parameter c", pyo.NonNegativeReals),
@@ -133,6 +134,133 @@ class ConventionalGen(Component):
         return (
             self.get_pyomo_element("a", model) * self.get_pyomo_element("p", model)[t] ** 2
             + self.get_pyomo_element("b", model) * self.get_pyomo_element("p", model)[t]
+            + self.get_pyomo_element("c", model)
+        ) * self.tau
+
+
+class ConventionalGenWithRateConstraints(Component):
+    """
+    Conventional generator which has rate constraints.
+    The input is the fraction of maximum rate of power output.
+    Note that p <= 0 for generators.
+
+    .. runblock:: pycon
+
+        >>> from commonpower.models.components import ConventionalGenWithRateConstraints
+        >>> ConventionalGenWithRateConstraints.info()
+
+    """
+
+    CLASS_INDEX = "gr"
+    MAX_P = 1e3  # maximum absolute active power (BigM constraint)
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        model_elements = [
+            ModelElement("p", et.STATE, "active power", pyo.NonPositiveReals),
+            ModelElement("ps", et.INPUT, "setpoint of active power", pyo.NonPositiveReals),
+            ModelElement("max_rate", et.CONSTANT, "absolute max rate of change of active power", pyo.PositiveReals),
+            ModelElement("a", et.CONSTANT, "cost parameter a", pyo.NonNegativeReals),
+            ModelElement("b", et.CONSTANT, "cost parameter b", pyo.NonNegativeReals),
+            ModelElement("c", et.CONSTANT, "cost parameter c", pyo.NonNegativeReals),
+        ]
+        return model_elements
+
+    def _get_additional_constraints(self) -> List[ModelElement]:
+        """
+        Defines auxiliary variables to determine the rate of change
+        based on the input power setpoint.
+
+        .. math::
+            dp_{t} = ps_{t} - p_{t}, \\
+            ei_{t} = \\left\\{
+            \\begin{array}{ll}
+            1 & dp_{t} \\leq - maxrate \\\\
+            0 & \\, \\textrm{otherwise} \\\\
+            \\end{array}
+            \\right, \\
+            ed_{t} = \\left\\{
+            \\begin{array}{ll}
+            1 & dp_{t} \\geq maxrate \\\\
+            0 & \\, \\textrm{otherwise} \\\\
+            \\end{array}
+            \\right.
+        """
+
+        dp = ModelElement("dp", et.VAR, "delta between setpoint and current power", pyo.Reals, bounds=(-1e6, 1e6))
+
+        def dp_cf(scenario: ConstraintScenario):
+            def dp_f(model, t):
+                return scenario("dp", model, True)[t] == scenario("ps", model)[t] - scenario("p", model)[t]
+
+            return dp_f
+
+        c_dp = ModelElement(
+            "c_dp", et.ROBUST_CONSTRAINT, "delta between setpoint and current power constraint", expr=dp_cf
+        )
+
+        # TODO: Include this into MIPExpressionBuilder
+        neg_max_rate = ModelElement(
+            "neg_max_rate", et.VAR, "negative max rate", pyo.NonPositiveReals, bounds=(-1e6, 0), indexed=False
+        )
+        c_neg_max_rate = ModelElement(
+            "c_neg_max_rate",
+            et.CONSTRAINT,
+            "negative max rate constraint",
+            expr=(
+                lambda model: self.get_pyomo_element("neg_max_rate", model)
+                == -self.get_pyomo_element("max_rate", model)
+            ),
+            indexed=False,
+        )
+
+        mb = MIPExpressionBuilder(self, self.MAX_P)
+        mb.from_geq("neg_max_rate", "dp", "ei")
+        mb.from_geq("dp", "max_rate", "ed")
+
+        return [dp, c_dp, neg_max_rate, c_neg_max_rate] + mb.model_elements
+
+    def _get_dynamic_fcn(self) -> List[ModelElement]:
+        """
+        Defines the dynamics of the generator governed by its rate constraints.
+
+        .. math::
+            p_{t+1} = p_{t} + (ed_{t} + ei_{t}) * dp_{t} + \\ed_{t} * maxrate - ei_{t} * maxrate.
+        """
+
+        def dynamics(scenario: ConstraintScenario):
+            def dynamic_fcn(model, t):
+                if t == self.horizon:  # horizon+1 cannot have a constraint
+                    return Constraint.Skip
+                else:
+                    return scenario("p", model, True)[t + 1] == scenario("p", model)[t] + (
+                        1 - (scenario("ed", model)[t] + scenario("ei", model)[t])
+                    ) * scenario("dp", model)[t] + scenario("ed", model)[t] * scenario("max_rate", model) - scenario(
+                        "ei", model
+                    )[
+                        t
+                    ] * scenario(
+                        "max_rate", model
+                    )
+
+            return dynamic_fcn
+
+        dyn = ModelElement("dynamic_fcn", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics)
+
+        return [dyn]
+
+    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+        """
+        The cost function represents:
+
+        .. math::
+            cost = a * p^2 + b * -p + c.
+
+        Note that p <= 0 for generators.
+        """
+        return (
+            self.get_pyomo_element("a", model) * self.get_pyomo_element("p", model)[t] ** 2
+            + self.get_pyomo_element("b", model) * -self.get_pyomo_element("p", model)[t]
             + self.get_pyomo_element("c", model)
         ) * self.tau
 
@@ -204,28 +332,28 @@ class ESS(Component):
             soc_{t+1} = etas * soc_{t} + etas * p_{ec} * p_t + \\frac{1}{etad} * (1 - p_{ec}) * p_t
         """
 
-        def dynamic_fcn(model, t):
-            # p > 0 is charging
-            if t == self.horizon:  # horizon+1 cannot have a constraint
-                return Constraint.Skip
-            else:
-                return (self.get_pyomo_element("etas", model) ** self.tau * self.get_pyomo_element("soc", model)[t]) + (
-                    self.get_pyomo_element("etac", model)
-                    * self.get_pyomo_element("p", model)[t]
-                    * self.get_pyomo_element("p_ec", model)[t]
-                    * self.tau
-                ) + (
-                    (1 / self.get_pyomo_element("etad", model))
-                    * self.get_pyomo_element("p", model)[t]
-                    * (1 - self.get_pyomo_element("p_ec", model)[t])
-                    * self.tau
-                ) == self.get_pyomo_element(
-                    "soc", model
-                )[
-                    t + 1
-                ]
+        def dynamics(scenario: ConstraintScenario):
+            def dynamic_fcn(model, t):
+                # p > 0 is charging
+                if t == self.horizon:  # horizon+1 cannot have a constraint
+                    return Constraint.Skip
+                else:
+                    return (scenario("etas", model) ** self.tau * scenario("soc", model)[t]) + (
+                        scenario("etac", model) * scenario("p", model)[t] * scenario("p_ec", model)[t] * self.tau
+                    ) + (
+                        (1 / scenario("etad", model))
+                        * scenario("p", model)[t]
+                        * (1 - scenario("p_ec", model)[t])
+                        * self.tau
+                    ) == scenario(
+                        "soc", model, True
+                    )[
+                        t + 1
+                    ]
 
-        dyn = ModelElement("dynamic_fcn", et.CONSTRAINT, "dynamic function", expr=dynamic_fcn)
+            return dynamic_fcn
+
+        dyn = ModelElement("dynamic_fcn", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics)
 
         return [dyn]
 
@@ -350,12 +478,17 @@ class EV(Component):
             domain=pyo.NonNegativeReals,
             indexed=False,
         )
+
+        def steps_until_next_cycle_f(model):
+            return self.get_pyomo_element("steps_until_next_cycle", model) == self.horizon - self.get_pyomo_element(
+                "local_time", model
+            )
+
         c_steps_until_next_cycle = ModelElement(
             "c_steps_until_next_cycle",
             et.CONSTRAINT,
             "constraint to update steps until next cycle",
-            expr=lambda model: self.get_pyomo_element("steps_until_next_cycle", model)
-            == self.horizon - self.get_pyomo_element("local_time", model),
+            expr=steps_until_next_cycle_f,
             indexed=False,
         )
 
@@ -372,15 +505,21 @@ class EV(Component):
             bounds=(0, 1e6),
             domain=pyo.NonNegativeReals,
         )
+
+        def local_time_indexed_f(model, t):
+            return self.get_pyomo_element("local_time_indexed", model)[t] == (
+                1 - self.get_pyomo_element("next_cycle_binary", model)[t]
+            ) * (t + self.get_pyomo_element("local_time", model)) + self.get_pyomo_element("next_cycle_binary", model)[
+                t
+            ] * (
+                t + self.get_pyomo_element("local_time", model) - self.horizon
+            )
+
         c_local_time_indexed = ModelElement(
             "c_local_time_indexed",
             et.CONSTRAINT,
             "constraint to provide indexed local time",
-            expr=lambda model, t: self.get_pyomo_element("local_time_indexed", model)[t]
-            == (1 - self.get_pyomo_element("next_cycle_binary", model)[t])
-            * (t + self.get_pyomo_element("local_time", model))
-            + self.get_pyomo_element("next_cycle_binary", model)[t]
-            * (t + self.get_pyomo_element("local_time", model) - self.horizon),
+            expr=local_time_indexed_f,
         )
 
         # calculate when the EV is plugged in. This might be replaced with DATA in future variants of this model.
@@ -400,29 +539,31 @@ class EV(Component):
         )
 
         # when departure_indicator == 1, is_charged cannot be 0
-        def soc_req_f(model, t):
-            return (
-                self.get_pyomo_element("departure_indicator", model)[t]
-                <= self.get_pyomo_element("is_charged", model)[t]
-            )
+        def soc_req_cf(scenario: ConstraintScenario):
+            def soc_req_f(model, t):
+                return scenario("departure_indicator", model, True)[t] <= scenario("is_charged", model)[t]
+
+            return soc_req_f
 
         c_soc_req = ModelElement(
             "c_soc_req",
-            et.CONSTRAINT,
+            et.ROBUST_CONSTRAINT,
             "makes sure that the EV is charged on departure",
-            expr=soc_req_f,
+            expr=soc_req_cf,
         )
 
         # make sure the EV cannot transfer power when unplugged
+        def ev_unplugged_cf(scenario: ConstraintScenario):
+            def ev_unplugged_f(model, t):
+                return scenario("p", model)[t] * (1 - scenario("is_plugged_in", model, True)[t]) == 0
 
-        def ev_unplugged_f(model, t):
-            return self.get_pyomo_element("p", model)[t] * (1 - self.get_pyomo_element("is_plugged_in", model)[t]) == 0
+            return ev_unplugged_f
 
         c_ev_unplugged = ModelElement(
             "c_ev_unplugged",
-            et.CONSTRAINT,
+            et.ROBUST_CONSTRAINT,
             "makes sure that the EV cannot transfer power once it is unplugged",
-            expr=ev_unplugged_f,
+            expr=ev_unplugged_cf,
         )
 
         # make sure that soc == soc_init on return
@@ -444,17 +585,20 @@ class EV(Component):
         )
 
         # The solver will set the unplugged_consumption accordingly.
-        def soc_on_return_f(model, t):
-            return (
-                self.get_pyomo_element("soc", model)[t] * self.get_pyomo_element("return_indicator", model)[t]
-                == self.get_pyomo_element("soc_init", model) * self.get_pyomo_element("return_indicator", model)[t]
-            )
+        def soc_on_return_cf(scenario: ConstraintScenario):
+            def soc_on_return_f(model, t):
+                return (
+                    scenario("soc", model, True)[t] * scenario("return_indicator", model)[t]
+                    == scenario("soc_init", model) * scenario("return_indicator", model)[t]
+                )
+
+            return soc_on_return_f
 
         c_soc_on_return_f = ModelElement(
             "c_unplugged_consumption",
-            et.CONSTRAINT,
+            et.ROBUST_CONSTRAINT,
             "constraint to set the soc to its inital value on return",
-            expr=soc_on_return_f,
+            expr=soc_on_return_cf,
             indexed=True,
         )
 
@@ -501,37 +645,34 @@ class EV(Component):
             soc_{t+1} = etas * soc_{t} + etas * p_{ec} * p_t + \\frac{1}{etad} * (1 - p_{ec}) * p_t
         """
 
-        def dynamic_fcn(model, t):
-            # p > 0 is charging
-            if t == self.horizon:  # horizon+1 cannot have a constraint
-                return Constraint.Skip
-            else:
-                return (
-                    self.get_pyomo_element("is_plugged_in", model)[t]
-                    * self.get_pyomo_element("etas", model) ** self.tau
-                    * self.get_pyomo_element("soc", model)[t]
-                ) + (
-                    (1 - self.get_pyomo_element("is_plugged_in", model)[t]) * self.get_pyomo_element("soc", model)[t]
-                ) + (
-                    self.get_pyomo_element("etac", model)
-                    * self.get_pyomo_element("p", model)[t]
-                    * self.get_pyomo_element("p_ec", model)[t]
-                    * self.tau
-                ) + (
-                    (1 / self.get_pyomo_element("etad", model))
-                    * self.get_pyomo_element("p", model)[t]
-                    * (1 - self.get_pyomo_element("p_ec", model)[t])
-                    * self.tau
-                ) + (
-                    (1 - self.get_pyomo_element("is_plugged_in", model)[t])
-                    * self.get_pyomo_element("unplugged_consumption", model)[t]
-                ) == self.get_pyomo_element(
-                    "soc", model
-                )[
-                    t + 1
-                ]
+        def dynamics(scenario: ConstraintScenario):
+            def dynamic_fcn(model, t):
+                # p > 0 is charging
+                if t == self.horizon:  # horizon+1 cannot have a constraint
+                    return Constraint.Skip
+                else:
+                    return (
+                        scenario("is_plugged_in", model)[t]
+                        * scenario("etas", model) ** self.tau
+                        * scenario("soc", model)[t]
+                    ) + ((1 - scenario("is_plugged_in", model)[t]) * scenario("soc", model)[t]) + (
+                        scenario("etac", model) * scenario("p", model)[t] * scenario("p_ec", model)[t] * self.tau
+                    ) + (
+                        (1 / scenario("etad", model))
+                        * scenario("p", model)[t]
+                        * (1 - scenario("p_ec", model)[t])
+                        * self.tau
+                    ) + (
+                        (1 - scenario("is_plugged_in", model)[t]) * scenario("unplugged_consumption", model)[t]
+                    ) == scenario(
+                        "soc", model, True
+                    )[
+                        t + 1
+                    ]
 
-        dyn_p = ModelElement("dynamic_fcn", et.CONSTRAINT, "dynamic function", expr=dynamic_fcn)
+            return dynamic_fcn
+
+        dyn_p = ModelElement("dynamic_fcn", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics)
 
         return [dyn_p]
 
@@ -599,6 +740,18 @@ class EVData(Component):
                 domain=pyo.Binary,
             ),
             ModelElement(
+                "departure_indicator",
+                et.DATA,
+                "departure indicator",
+                domain=pyo.Binary,
+            ),
+            ModelElement(
+                "return_indicator",
+                et.DATA,
+                "return indicator",
+                domain=pyo.Binary,
+            ),
+            ModelElement(
                 "req_soc_rel",
                 et.CONSTANT,
                 "required final relative soc, i.e., soc/max(soc)",
@@ -637,59 +790,26 @@ class EVData(Component):
             indexed=False,
         )
 
-        # We have the is_plugged_in data.
-        # We need an edge detection to determine the departure and return indicators.
-        # If the edge is 1, the EV has departed in this time step.
-        # If the edge is -1, the EV has returned in this time step.
-        is_plugged_in_edge = ModelElement(
-            "is_plugged_in_edge",
-            et.VAR,
-            "edge indicator of is_plugged_in",
-            bounds=(-1, 1),
-            domain=pyo.Integers,
-            indexed=True,
-        )
-
-        # Essentially edge detection via kernel (1,-1)
-        def is_plugged_in_edge_f(model, t):
-            if t == 0:  # plugged in by definition
-                return self.get_pyomo_element("is_plugged_in_edge", model)[t] == 0
-            else:
-                return (
-                    self.get_pyomo_element("is_plugged_in_edge", model)[t]
-                    == self.get_pyomo_element("is_plugged_in", model)[t - 1]
-                    - self.get_pyomo_element("is_plugged_in", model)[t]
-                )
-
-        c_is_plugged_in_edge = ModelElement(
-            "c_is_plugged_in_edge",
-            et.CONSTRAINT,
-            "sets the edge indicator of is_plugged_in",
-            expr=is_plugged_in_edge_f,
-        )
-
         mb = MIPExpressionBuilder(self, self.MAX_P, eps=1e-5)
 
         mb.from_geq("p", 0, "p_ec")
 
         mb.from_geq("soc", "req_soc_abs", "is_charged")  # 1 if soc >= req_soc
 
-        mb.from_gt("is_plugged_in_edge", 0, "departure_indicator")  # 1 if departure edge
-        mb.from_gt(0, "is_plugged_in_edge", "return_indicator")  # 1 if return edge
-
         # make sure that the EV is charged at the time of departure
         # when departure indicator == 1, is_charged cannot be 0
-        def soc_req_f(model, t):
-            return (
-                self.get_pyomo_element("departure_indicator", model)[t]
-                <= self.get_pyomo_element("is_charged", model)[t]
-            )
+        # since soc might be uncertain, this is a robust constraint
+        def soc_req_cf(scenario: ConstraintScenario):
+            def soc_req_f(model, t):
+                return scenario("departure_indicator", model)[t] <= scenario("is_charged", model, True)[t]
+
+            return soc_req_f
 
         c_soc_req = ModelElement(
             "c_soc_req",
-            et.CONSTRAINT,
+            et.ROBUST_CONSTRAINT,
             "makes sure that the EV is charged on departure",
-            expr=soc_req_f,
+            expr=soc_req_cf,
         )
 
         # make sure the EV cannot transfer power when unplugged
@@ -715,17 +835,20 @@ class EVData(Component):
 
         # The solver will set the unplugged_consumption accordingly.
         # We need to project the arrival edge from -1 to 1, and the departure edge to 0.
-        def soc_on_return_f(model, t):
-            return (
-                self.get_pyomo_element("soc", model)[t] * self.get_pyomo_element("return_indicator", model)[t]
-                == self.get_pyomo_element("soc_init", model) * self.get_pyomo_element("return_indicator", model)[t]
-            )
+        def soc_on_return_cf(scenario: ConstraintScenario):
+            def soc_on_return_f(model, t):
+                return (
+                    scenario("soc", model, True)[t] * scenario("return_indicator", model)[t]
+                    == scenario("soc_init", model) * scenario("return_indicator", model)[t]
+                )
+
+            return soc_on_return_f
 
         c_unplugged_consumption = ModelElement(
             "c_unplugged_consumption",
-            et.CONSTRAINT,
+            et.ROBUST_CONSTRAINT,
             "constraint to set the soc to its inital value on return",
-            expr=soc_on_return_f,
+            expr=soc_on_return_cf,
             indexed=True,
         )
 
@@ -733,8 +856,6 @@ class EVData(Component):
             [
                 req_soc_abs,
                 c_req_soc_abs,
-                is_plugged_in_edge,
-                c_is_plugged_in_edge,
             ]
             + mb.model_elements
             + [
@@ -769,37 +890,34 @@ class EVData(Component):
             soc_{t+1} = etas * soc_{t} + etas * p_{ec} * p_t + \\frac{1}{etad} * (1 - p_{ec}) * p_t
         """
 
-        def dynamic_fcn(model, t):
-            # p > 0 is charging
-            if t == self.horizon:  # horizon+1 cannot have a constraint
-                return Constraint.Skip
-            else:
-                return (
-                    self.get_pyomo_element("is_plugged_in", model)[t]
-                    * self.get_pyomo_element("etas", model) ** self.tau
-                    * self.get_pyomo_element("soc", model)[t]
-                ) + (
-                    (1 - self.get_pyomo_element("is_plugged_in", model)[t]) * self.get_pyomo_element("soc", model)[t]
-                ) + (
-                    self.get_pyomo_element("etac", model)
-                    * self.get_pyomo_element("p", model)[t]
-                    * self.get_pyomo_element("p_ec", model)[t]
-                    * self.tau
-                ) + (
-                    (1 / self.get_pyomo_element("etad", model))
-                    * self.get_pyomo_element("p", model)[t]
-                    * (1 - self.get_pyomo_element("p_ec", model)[t])
-                    * self.tau
-                ) + (
-                    (1 - self.get_pyomo_element("is_plugged_in", model)[t])
-                    * self.get_pyomo_element("unplugged_consumption", model)[t]
-                ) == self.get_pyomo_element(
-                    "soc", model
-                )[
-                    t + 1
-                ]
+        def dynamics(scenario: ConstraintScenario):
+            def dynamic_fcn(model, t):
+                # p > 0 is charging
+                if t == self.horizon:  # horizon+1 cannot have a constraint
+                    return Constraint.Skip
+                else:
+                    return (
+                        scenario("is_plugged_in", model)[t]
+                        * scenario("etas", model) ** self.tau
+                        * scenario("soc", model)[t]
+                    ) + ((1 - scenario("is_plugged_in", model)[t]) * scenario("soc", model)[t]) + (
+                        scenario("etac", model) * scenario("p", model)[t] * scenario("p_ec", model)[t] * self.tau
+                    ) + (
+                        (1 / scenario("etad", model))
+                        * scenario("p", model)[t]
+                        * (1 - scenario("p_ec", model)[t])
+                        * self.tau
+                    ) + (
+                        (1 - scenario("is_plugged_in", model)[t]) * scenario("unplugged_consumption", model)[t]
+                    ) == scenario(
+                        "soc", model, True
+                    )[
+                        t + 1
+                    ]
 
-        dyn_p = ModelElement("dynamic_fcn", et.CONSTRAINT, "dynamic function", expr=dynamic_fcn)
+            return dynamic_fcn
+
+        dyn_p = ModelElement("dynamic_fcn", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics)
 
         return [dyn_p]
 
@@ -974,49 +1092,42 @@ class HeatPumpWithoutStorageButCOP(Component):
         return model_elements
 
     def _get_dynamic_fcn(self) -> List[ModelElement]:
-        def dynamic_temp_indoor_fcn(model, t):
-            if t == self.horizon:
-                return Constraint.Skip
-            else:
-                return self.get_pyomo_element("T_indoor", model)[t + 1] == self.get_pyomo_element("T_indoor", model)[
-                    t
-                ] + self.tau * (
-                    -(
-                        (self.get_pyomo_element("H_FH", model) + self.get_pyomo_element("H_out", model))
-                        / (self.get_pyomo_element("H_out", model) * self.get_pyomo_element("tau_building", model))
+        def dynamics_temp_indoor(scenario: ConstraintScenario):
+            def dynamic_temp_indoor_fcn(model, t):
+                if t == self.horizon:
+                    return Constraint.Skip
+                else:
+                    return scenario("T_indoor", model, True)[t + 1] == scenario("T_indoor", model)[t] + self.tau * (
+                        -(
+                            (scenario("H_FH", model) + scenario("H_out", model))
+                            / (scenario("H_out", model) * scenario("tau_building", model))
+                        )
+                        * scenario("T_indoor", model)[t]
+                        + (scenario("H_FH", model) / (scenario("H_out", model) * scenario("tau_building", model)))
+                        * scenario("T_ret_FH", model)[t]
+                        + scenario("T_outside", model)[t] / scenario("tau_building", model)
                     )
-                    * self.get_pyomo_element("T_indoor", model)[t]
-                    + (
-                        self.get_pyomo_element("H_FH", model)
-                        / (self.get_pyomo_element("H_out", model) * self.get_pyomo_element("tau_building", model))
-                    )
-                    * self.get_pyomo_element("T_ret_FH", model)[t]
-                    + self.get_pyomo_element("T_outside", model)[t] / self.get_pyomo_element("tau_building", model)
-                )
 
-        def dynamic_temp_ret_fh_fcn(model, t):
-            if t == self.horizon:
-                return Constraint.Skip
-            else:
-                return self.get_pyomo_element("T_ret_FH", model)[t + 1] == self.get_pyomo_element("T_ret_FH", model)[
-                    t
-                ] + self.tau * (
-                    (self.get_pyomo_element("H_FH", model) / self.get_pyomo_element("Cw_FH", model))
-                    * self.get_pyomo_element("T_indoor", model)[t]
-                    - (self.get_pyomo_element("H_FH", model) / self.get_pyomo_element("Cw_FH", model))
-                    * self.get_pyomo_element("T_ret_FH", model)[t]
-                    + (
-                        self.get_pyomo_element("p", model)[t]
-                        * self.get_pyomo_element("COP", model)[t]
-                        / self.get_pyomo_element("Cw_FH", model)
+            return dynamic_temp_indoor_fcn
+
+        def dynamics_temp_ret_fh(scenario: ConstraintScenario):
+            def dynamic_temp_ret_fh_fcn(model, t):
+                if t == self.horizon:
+                    return Constraint.Skip
+                else:
+                    return scenario("T_ret_FH", model, True)[t + 1] == scenario("T_ret_FH", model)[t] + self.tau * (
+                        (scenario("H_FH", model) / scenario("Cw_FH", model)) * scenario("T_indoor", model)[t]
+                        - (scenario("H_FH", model) / scenario("Cw_FH", model)) * scenario("T_ret_FH", model)[t]
+                        + (scenario("p", model)[t] * scenario("COP", model)[t] / scenario("Cw_FH", model))
                     )
-                )
+
+            return dynamic_temp_ret_fh_fcn
 
         dyn_temp_indoor = ModelElement(
-            "dynamic_fcn_T_indoor", et.CONSTRAINT, "dynamic function", expr=dynamic_temp_indoor_fcn
+            "dynamic_fcn_T_indoor", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics_temp_indoor
         )
         dyn_temp_ret_fh = ModelElement(
-            "dynamic_fcn_T_ret_FH", et.CONSTRAINT, "dynamic function", expr=dynamic_temp_ret_fh_fcn
+            "dynamic_fcn_T_ret_FH", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics_temp_ret_fh
         )
 
         return [dyn_temp_indoor, dyn_temp_ret_fh]
@@ -1068,17 +1179,19 @@ class ESSLinear(Component):
             soc_{t+1} = soc_{t} + p_t
         """
 
-        def dynamic_fcn(model, t):
-            # p > 0 is charging
-            if t == self.horizon:
-                return Constraint.Skip
-            else:
-                return (
-                    self.get_pyomo_element("soc", model)[t] + self.get_pyomo_element("p", model)[t] * self.tau
-                    == self.get_pyomo_element("soc", model)[t + 1]
-                )
+        def dynamics(scenario: ConstraintScenario):
+            def dynamic_fcn(model, t):
+                if t == self.horizon:
+                    return Constraint.Skip
+                else:
+                    return (
+                        scenario("soc", model, True)[t + 1]
+                        == scenario("soc", model)[t] + scenario("p", model)[t] * self.tau
+                    )
 
-        dyn = ModelElement("dynamic_fcn", et.CONSTRAINT, "dynamic function", expr=dynamic_fcn)
+            return dynamic_fcn
+
+        dyn = ModelElement("dynamic_fcn", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics)
 
         return [dyn]
 

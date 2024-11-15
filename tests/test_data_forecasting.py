@@ -28,7 +28,7 @@ class TestForecasting(unittest.TestCase):
         
         self.ds2 = ConstantDataSource({"test": 2.5}, self.ds.get_date_range())
 
-        self.test_time = "15.10.2016"
+        self.test_time = datetime(2016, 10, 15)
 
     def test_ConstantForecaster(self):
         dp = DataProvider(self.ds, ConstantForecaster(self.freq, self.horizon))

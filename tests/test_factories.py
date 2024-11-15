@@ -8,11 +8,11 @@ from copy import deepcopy
 from commonpower.control.controllers import OptimalController
 from commonpower.control.runners import DeploymentRunner
 from commonpower.core import System, Bus
-from commonpower.models.busses import *
+from commonpower.models.buses import *
 from commonpower.models.components import *
 from commonpower.models.powerflow import *
 from commonpower.data_forecasting import *
-from commonpower.utils.param_initialization import RangeInitializer
+from commonpower.modeling.param_initialization import RangeInitializer
 from commonpower.extensions.factories import Factory, Sampler
 
 

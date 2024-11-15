@@ -4,11 +4,9 @@ Base classes and generic functionality for data sources and forecasters.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import List, Union
+from typing import List
 
 import numpy as np
-
-from commonpower.utils import to_datetime
 
 
 class DataSource:
@@ -61,6 +59,9 @@ class DataSource:
 
 
 class Forecaster:
+
+    is_uncertain = True  # Generally, forecasts are uncertain
+
     def __init__(
         self,
         frequency: timedelta = timedelta(hours=1),
@@ -167,19 +168,17 @@ class DataProvider:
 
         return current_obs, fc
 
-    def observe(self, time: Union[str, datetime]) -> dict[str, np.ndarray]:
+    def observe(self, time: datetime) -> dict[str, np.ndarray]:
         """
         Returns the observations for all variables of the data provider.
         The observations span the forecast horizon.
 
         Args:
-            time (Union[str, datetime]): Current time.
+            time (datetime): Current time.
 
         Returns:
             dict: {"<element1>": np.ndarray, "<element2>": np.ndarray}.
         """
-
-        time = to_datetime(time)
 
         current_obs, fc = self._get_current_obs_and_forecast(time)
 
@@ -189,23 +188,22 @@ class DataProvider:
 
         return obs_dict
 
-    def observation_bounds(self, time: Union[str, datetime]) -> dict[str, tuple[np.ndarray]]:
+    def observation_bounds(self, time: datetime) -> dict[str, list[tuple[float]]]:
         """
         Returns the observation bounds for all elements in the data source.
         The default is "guaranteed least-conservative bounds", i.e., the bounds are based on the absolute difference
         between forecast and true value. This only works if the true data is available of course.
 
         The returned bounds span the forecast horizon.
+        Returns None if the forecast is perfect.
 
         Args:
-            time (Union[str, datetime]): Current time.
+            time (datetime): Current time.
 
         Returns:
-            dict (dict[str, tuple(np.ndarray)]): {"element1": (lower bounds, upper bounds), \
-                "element2": (lower bounds, upper bounds)}
+            dict (dict[str, list[tuple[float]]]): {"element1": [(lb_0, ub_0), (lb_1, ub_1)], \
+                "element2": [(lb_0, ub_0), (lb_1, ub_1)]}
         """
-
-        time = to_datetime(time)
 
         current_obs, fc = self._get_current_obs_and_forecast(time)
 
@@ -213,10 +211,12 @@ class DataProvider:
 
         out = {}
 
-        for i, var in enumerate(self.data.get_variables()):
+        for i, var in enumerate(self.observable_features):
             lb_var = fc[:, i] - abs(truth[:, i] - fc[:, i])
             ub_var = fc[:, i] + abs(truth[:, i] - fc[:, i])
 
-            out[var] = (np.concatenate([current_obs[:, i], lb_var]), np.concatenate([current_obs[:, i], ub_var]))
+            out[var] = [
+                x for x in zip(np.concatenate([current_obs[:, i], lb_var]), np.concatenate([current_obs[:, i], ub_var]))
+            ]
 
         return out

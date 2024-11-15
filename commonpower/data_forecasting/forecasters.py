@@ -65,6 +65,9 @@ class LookBackForecaster(Forecaster):
 
 
 class PerfectKnowledgeForecaster(Forecaster):
+
+    is_uncertain = False
+
     def __init__(self, frequency: timedelta = timedelta(hours=1), horizon: timedelta = timedelta(hours=24)):
         """
         This forecaster perfectly predicts future values.

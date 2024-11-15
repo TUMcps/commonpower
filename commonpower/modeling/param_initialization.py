@@ -28,6 +28,15 @@ class ParamInitializer:
         """
         raise NotImplementedError
 
+    def with_uncertainty(self, lb: int | float, ub: int | float) -> ParamInitializer:
+        self.bounds = (lb, ub)
+        return self
+
+    def is_uncertain(self) -> bool:
+        if hasattr(self, 'bounds'):
+            return True
+        return False
+
 
 class RangeInitializer(ParamInitializer):
     def __init__(self, lb: Union[int, float], ub: Union[int, float], sampling_mode: str = "uniform"):

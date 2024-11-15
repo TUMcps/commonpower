@@ -7,7 +7,7 @@ from functools import partial
 
 from commonpower.core import System, Bus
 from commonpower.models.components import *
-from commonpower.models.busses import *
+from commonpower.models.buses import *
 from commonpower.models.powerflow import *
 from commonpower.control.controllers import RLControllerSB3
 from commonpower.control.safety_layer.safety_layers import ActionProjectionSafetyLayer
@@ -15,10 +15,10 @@ from commonpower.control.runners import SingleAgentTrainer, DeploymentRunner
 from commonpower.control.wrappers import SingleAgentWrapper
 from stable_baselines3 import PPO
 from commonpower.data_forecasting.forecasters import *
-from commonpower.utils.param_initialization import *
+from commonpower.modeling.param_initialization import *
 from commonpower.data_forecasting.data_sources import CSVDataSource
 from commonpower.data_forecasting.base import DataProvider
-from commonpower.modelling import ModelHistory
+from commonpower.modeling.history import ModelHistory
 from commonpower.control.logging_utils.loggers import TensorboardLogger
 from commonpower.control.logging_utils.callbacks import *
 from commonpower.control.configs.algorithms import *
@@ -124,7 +124,7 @@ class TestControl(unittest.TestCase):
             seed=train_seed,
             normalize_actions=True,
         )
-        runner.run(fixed_start="27.11.2016")
+        runner.run(fixed_start=datetime(2016, 11, 27))
 
         # Just for demonstration purposes, we show here how to load a pre-trained policy
         # However, in the present case this would not be necessary, since "agent1" has saved the policy after training
@@ -152,7 +152,7 @@ class TestControl(unittest.TestCase):
             seed=eval_seed,
         )
         # Finally, we can simulate the system with the trained controller for the given day
-        rl_deployer.run(n_steps=1, fixed_start="27.11.2016")
+        rl_deployer.run(n_steps=1, fixed_start=datetime(2016, 11, 27))
 
         self.assertTrue(True)
 

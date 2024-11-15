@@ -3,17 +3,17 @@ from pathlib import Path
 from commonpower.control.safety_layer.safety_layers import ActionProjectionSafetyLayer
 from commonpower.core import System
 from commonpower.models.components import *
-from commonpower.models.busses import *
+from commonpower.models.buses import *
 from commonpower.models.powerflow import *
 from commonpower.data_forecasting import *
-from commonpower.utils.param_initialization import *
+from commonpower.modeling.param_initialization import *
 from commonpower.control.controllers import RLControllerMA, OptimalController
 from commonpower.control.logging_utils.callbacks import *
 from commonpower.control.wrappers import MultiAgentWrapper
 from commonpower.control.runners import MAPPOTrainer, DeploymentRunner
 from commonpower.control.configs.algorithms import *
 from commonpower.control.safety_layer.penalties import *
-from commonpower.modelling import ModelHistory
+from commonpower.modeling.history import ModelHistory
 import unittest
 import shutil
 
@@ -167,7 +167,7 @@ class TestControl(unittest.TestCase):
             logger=logger,
         )
         # run training
-        runner.run(fixed_start="27.11.2016")
+        runner.run(fixed_start=datetime(2016, 11, 27))
 
         # deployment
         # load pre-trained policies
@@ -193,7 +193,7 @@ class TestControl(unittest.TestCase):
             history=sys_history_mappo,
             seed=1,
         )
-        runner.run(n_steps=2, fixed_start="27.11.2016")
+        runner.run(n_steps=2, fixed_start=datetime(2016, 11, 27))
 
         self.assertTrue(True)
 
