@@ -7,8 +7,8 @@ from commonpower.core import *
 from commonpower.models.components import *
 from commonpower.models.lines import *
 from commonpower.models.powerflow import *
-from commonpower.utils.param_initialization import *
-from commonpower.modelling import *
+from commonpower.modeling.param_initialization import *
+from commonpower.modeling.base import *
 from commonpower.extensions.network_import import *
 
 

@@ -14,18 +14,19 @@ from typing import Callable, Dict, List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
-import pandas as pd
 from pyomo.core import ConcreteModel, Expression, Objective, Set, quicksum, value
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 
 from commonpower.control.environments import ControlEnv
 from commonpower.data_forecasting import DataProvider
-from commonpower.modelling import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity, ModelHistory
+from commonpower.modeling.base import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity
+from commonpower.modeling.history import ModelHistory
+from commonpower.modeling.param_initialization import ParamInitializer
+from commonpower.modeling.robust_constraints import RobustConstraintBuilder
 from commonpower.utils import rsetattr
 from commonpower.utils.cp_exceptions import EntityError, InstanceError
 from commonpower.utils.default_solver import get_default_solver
-from commonpower.utils.param_initialization import ParamInitializer
 
 
 class PowerFlowModel:
@@ -192,11 +193,12 @@ class System(ControllableModelEntity):
         self.continuous_control = continuous_control
         self.solver = solver
 
+        # check if all data providers have appropriate forecast horizon and data frequency
+        for node in self.nodes:
+            node.validate_data_providers(forecast_horizon, tau)
+
         self.add_to_model(ConcreteModel())
 
-        # check if all data providers and constants have been defined
-        for node in self.nodes:
-            node.validate(forecast_horizon, tau)
         # check if all nodes with input elements have a controller assigned
         # add unique control to controller dictionary
         ctrl_ids = []
@@ -215,16 +217,16 @@ class System(ControllableModelEntity):
 
         self.date_range = self._calc_date_range()
 
-    def reset(self, at_time: Union[str, datetime]) -> None:
+    def reset(self, at_time: datetime) -> None:
         """
         Resets the system model to the state at a certain timestamp.
         It creates a clone of the system's "raw" pyomo model which will then be used for simulation.
         Furthermore, entities' parameters are initialized according to their configuration.
 
         Args:
-            at_time (Union[str, datetime]): Timestamp to begin the simulation from.
+            at_time (datetime): Timestamp to begin the simulation from.
         """
-        self.t = pd.to_datetime(at_time, dayfirst=True) if isinstance(at_time, str) else at_time
+        self.t = at_time
         self.start_time = self.t
         self.instance = self.model.clone()
 
@@ -759,9 +761,9 @@ class Node(ControllableModelEntity):
         self.tau = None
         self.horizon = None
 
-        self.nodes = []
+        self.robust_constraint_builder = None  # set in add_to_model()
 
-        self.data_providers = []
+        self.nodes = []
 
     def set_id(self, parent_identity: str = "", number: int = 0) -> None:
         """
@@ -779,20 +781,6 @@ class Node(ControllableModelEntity):
         own_id = self.CLASS_INDEX + str(parent_number) + str(number)
         # possible alternative: own_id = self.CLASS_INDEX + "_" + '%03x' % random.randrange(16**3)
         self.id = parent_identity + "." + own_id if parent_identity != "" else own_id
-
-    def add_data_provider(self, data_provider: DataProvider) -> Component:
-        """
-        Adds a data provider to the component.
-        It will be checked during validation if all model elements which require a data provider are covered.
-
-        Args:
-            data_provider (DataProvider): Data provider instance.
-
-        Returns:
-            Component: Component instance.
-        """
-        self.data_providers.append(data_provider)
-        return self
 
     def add_to_model(self, model: ConcreteModel, **kwargs) -> None:
         """
@@ -827,25 +815,20 @@ class Node(ControllableModelEntity):
 
         self._check_config(self.config)
 
+        self.robust_constraint_builder = RobustConstraintBuilder(self)
+        self.robust_constraint_builder.expand_robust_constraints()
+
         for el in self.model_elements:
             self._add_model_element(el)
 
-    def validate(self, forecast_horizon: timedelta, tau: timedelta) -> None:
+    def validate_data_providers(self, forecast_horizon: timedelta, tau: timedelta) -> None:
         """
-        Validates if data providers have compatible configurations and if controllers have been defined appropriately.
+        Validates if data providers have compatible configurations.
 
         Args:
             forecast_horizon (timedelta): Forecast horizon.
             tau (timedelta): Sample time.
         """
-        # check if all required dataproviders are attached
-        needed_from_dataprovider = [el.name for el in self.model_elements if el.type == ElementTypes.DATA]
-        if needed_from_dataprovider:
-            if not self.data_providers:
-                raise EntityError(self, f"Data Providers for {needed_from_dataprovider} required.")
-            sourced_params = np.concatenate([s.get_variables() for s in self.data_providers], axis=None)
-            if not all(x in sourced_params for x in needed_from_dataprovider):
-                raise EntityError(self, f"Data Providers for {needed_from_dataprovider} required.")
 
         # check if all dataproviders have an appropriate forecast horizon, data frequency
         for dp in self.data_providers:
@@ -862,18 +845,8 @@ class Node(ControllableModelEntity):
                     f" {dp.frequency}",
                 )
 
-        # check if all states have corresponding initializer instances in the config
-        states = [el for el in self.model_elements if el.type == ElementTypes.STATE]
-        for s in states:
-            if not isinstance(self.config[f"{s.name}_init"], ParamInitializer):
-                raise EntityError(
-                    self,
-                    f"The initializer of state init parameter {s.name}_init must be of type"
-                    f" {ParamInitializer.__name__}",
-                )
-
         for node in self.nodes:
-            node.validate(forecast_horizon, tau)
+            node.validate_data_providers(forecast_horizon, tau)
 
         self.is_valid = True
 
@@ -949,6 +922,24 @@ class Node(ControllableModelEntity):
                 self.set_value(
                     self.instance, el.name, self.get_value(self.instance, f"{el.name}_init"), idx=0, fix_value=True
                 )
+                try:
+                    # try to set the bound variables of uncertain states
+                    self.set_value(
+                        self.instance,
+                        f"{el.name}_lb",
+                        self.get_value(self.instance, f"{el.name}_init"),
+                        idx=0,
+                        fix_value=True,
+                    )
+                    self.set_value(
+                        self.instance,
+                        f"{el.name}_ub",
+                        self.get_value(self.instance, f"{el.name}_init"),
+                        idx=0,
+                        fix_value=True,
+                    )
+                except EntityError:
+                    pass
 
         self._update_data(at_time)
 
@@ -1052,6 +1043,7 @@ class Node(ControllableModelEntity):
         for el in [el for el in self.model_elements if el.type == ElementTypes.STATE and el.indexed is True]:
             # one timestep forward, i.e. state[t] <- state[t+1]
             values = self.get_value(self.instance, el.name)
+            values = np.round(values, 5)  # round to avoid warnings / numerical issues
             for t in range(0, self.horizon):
                 self.set_value(
                     self.instance,
@@ -1070,6 +1062,7 @@ class Node(ControllableModelEntity):
             if el.type in [ElementTypes.VAR, ElementTypes.INPUT, ElementTypes.COST] and el.indexed is True:
                 # one timestep forward, i.e. var[t] <- var[t+1]
                 values = self.get_value(self.instance, el.name)
+                values = np.round(values, 5)  # round to avoid warnings / numerical issues
                 for t in range(0, self.horizon):
                     self.set_value(
                         self.instance,
@@ -1083,13 +1076,23 @@ class Node(ControllableModelEntity):
         Reads data providers.
         """
         obs_dict = {}
+        uncertainty_bounds_dict = {}
+
         for dp in self.data_providers:
             obs_dict.update(dp.observe(at_time))
+            if dp.forecaster.is_uncertain:
+                uncertainty_bounds_dict.update(dp.observation_bounds(at_time))
 
         # update model
         for el in self.model_elements:
             if el.type == ElementTypes.DATA:
                 self.set_value(self.instance, el.name, obs_dict[el.name])
+
+                # update uncertainty if (1) uncertain forecast and (2) variable is used in robust constraint(s)
+                # We might only need condition (2) ?
+                if el.name in uncertainty_bounds_dict.keys() and self.has_pyomo_element(f"{el.name}_lb", self.instance):
+                    self.set_value(self.instance, f"{el.name}_lb", uncertainty_bounds_dict[el.name][0])
+                    self.set_value(self.instance, f"{el.name}_ub", uncertainty_bounds_dict[el.name][1])
 
     def _additional_updates(self) -> None:
         """

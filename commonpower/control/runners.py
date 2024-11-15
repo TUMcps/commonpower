@@ -24,16 +24,15 @@ from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
 from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
-from commonpower.control.controller_utils import t2n
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
 from commonpower.control.logging_utils.loggers import BaseLogger, TensorboardLogger
+from commonpower.control.util import t2n
 from commonpower.control.wrappers import DeploymentWrapper
 from commonpower.core import System
-from commonpower.modelling import ModelHistory
+from commonpower.modeling.history import ModelHistory
 from commonpower.utils.cp_exceptions import InstanceError
 from commonpower.utils.default_solver import get_default_solver
-from commonpower.utils.helpers import to_datetime
 
 
 class BaseRunner:
@@ -105,7 +104,7 @@ class BaseRunner:
             fixed_start (datetime): whether to run from a fixed given start timestamp
         """
 
-        self.fixed_start = to_datetime(fixed_start)
+        self.fixed_start = fixed_start
 
         self._run(n_steps)
 
@@ -165,7 +164,7 @@ class BaseRunner:
             None
 
         """
-        self.start_time = to_datetime(start_time)
+        self.start_time = start_time
 
     def system_feasible(self, n_checks: int = 1):
         """

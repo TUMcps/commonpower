@@ -9,7 +9,6 @@ from typing import Callable, List, Tuple, Union
 import gymnasium as gym
 import numpy as np
 import pandas as pd
-import pyomo.environ as pyo
 import torch as th
 from pyomo.core import ConcreteModel, Objective, quicksum
 from pyomo.opt import TerminationCondition
@@ -17,9 +16,9 @@ from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
-from commonpower.control.controller_utils import single_step_cost_callback
+from commonpower.control.util import clone_from_top_level_nodes, single_step_cost_callback
 from commonpower.core import Node, System
-from commonpower.modelling import ControllableModelEntity, ElementTypes
+from commonpower.modeling.base import ControllableModelEntity, ElementTypes
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
 from commonpower.utils.default_solver import get_default_solver
 
@@ -463,25 +462,20 @@ class OptimalController(BaseController):
         """
         # get current system pyomo instance
         self.sys_inst = self.nodes[0].instance
-        mdl = ConcreteModel()
 
-        for node in self.top_level_nodes:
-            if isinstance(node, System):
-                mdl = self.sys_inst.clone()
-            else:
-                setattr(mdl, node.id.split(".")[-1], node.get_self_as_pyomo_block(self.sys_inst).clone())
+        mdl = clone_from_top_level_nodes(self.top_level_nodes, self.sys_inst)
 
         def obj_fcn_mpc(model):
             return quicksum(
                 [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
             )
 
-        # we want to delete existing objectives from the original system and define our own for the controller
-        for objective in mdl.component_objects(pyo.Objective, descend_into=True):
-            mdl.del_component(objective)
         mdl.control_obj1 = Objective(expr=obj_fcn_mpc)
 
         self.model = mdl
+
+        """ if robust_solve(self.model, self.solver):
+            raise ControllerError(self, "Cannot find an input satisfying all constraints") """
 
         results = self.solver.solve(self.model, warmstart=True)
         self.model.solutions.store_to(results)
@@ -491,6 +485,7 @@ class OptimalController(BaseController):
             TerminationCondition.unbounded,
             TerminationCondition.infeasibleOrUnbounded,
         ]:
+            self.model.pprint()
             raise EntityError(self.model, "Cannot find an input satisfying all constraints")
 
         node_actions = {}

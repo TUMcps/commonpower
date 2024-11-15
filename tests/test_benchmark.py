@@ -8,15 +8,15 @@ from commonpower.benchmark.benchmark import Benchmark
 from commonpower.data_forecasting.base import DataProvider
 from commonpower.data_forecasting.data_sources import CSVDataSource, ConstantDataSource
 from commonpower.data_forecasting.forecasters import PersistenceForecaster
-from commonpower.modelling import ModelHistory
+from commonpower.modeling.history import ModelHistory
 from commonpower.core import System
 from commonpower.control.controllers import OptimalController
 from commonpower.control.runners import DeploymentRunner
 from commonpower.benchmark.storage import BenchmarkStorageFactory
-from commonpower.models.busses import ExternalGrid, RTPricedBus
+from commonpower.models.buses import ExternalGrid, RTPricedBus
 from commonpower.models.components import ESSLinear, Load, RenewableGen
 from commonpower.models.powerflow import PowerBalanceModel
-from commonpower.utils.param_initialization import RangeInitializer
+from commonpower.modeling.param_initialization import RangeInitializer
 
 @unittest.skip("Does not work on all platforms (TODO)")
 class TestBenchmark(unittest.TestCase):

@@ -5,7 +5,6 @@ import logging
 from copy import deepcopy
 from typing import Dict, List, Tuple
 
-import pyomo.environ as pyo
 from pyomo.core import ConcreteModel, Objective, quicksum
 from pyomo.core.expr.numeric_expr import SumExpression
 from pyomo.environ import value
@@ -13,8 +12,8 @@ from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 
 from commonpower.control.safety_layer.penalties import BasePenalty, DistanceDependingPenalty
-from commonpower.core import System
-from commonpower.modelling import ModelEntity
+from commonpower.control.util import clone_from_top_level_nodes
+from commonpower.modeling.base import ModelEntity
 from commonpower.utils.cp_exceptions import EntityError
 from commonpower.utils.default_solver import get_default_solver
 
@@ -178,19 +177,11 @@ class ActionReplacementWithOptSafetyLayer(BaseSafetyLayer):
             ConcreteModel: pyomo optimization model, representing
                            the part of the system under supervision of the safety
         """
-        mdl = ConcreteModel()
         # get current system pyomo instance
         sys_inst = self.nodes[0].instance
 
-        for node in self.top_level_nodes:
-            if isinstance(node, System):
-                mdl = sys_inst.clone()
-            else:
-                setattr(mdl, node.id.split(".")[-1], node.get_self_as_pyomo_block(sys_inst).clone())
+        mdl = clone_from_top_level_nodes(self.top_level_nodes, sys_inst)
 
-        # we want to delete existing objectives from the original system and (optionally) define our own
-        for objective in mdl.component_objects(pyo.Objective, descend_into=True):
-            mdl.del_component(objective)
         return mdl
 
     def solve_model(self, model: ConcreteModel) -> float:

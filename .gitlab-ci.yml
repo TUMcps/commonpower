@@ -69,38 +69,6 @@ test:
         coverage_format: cobertura
         path: coverage.xml
 
-pip_py_38:
-  stage: extended_test
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.8
-  script:
-    - git clone https://github.com/TUMcps/on-policy.git
-    - cd on-policy
-    - pip install -e .
-    - cd ..
-    - pip install .[ci]
-    - python -m pytest
-  rules:
-    - changes:
-      - .gitlab-ci.yml
-      - pyproject.toml
-    - if: $CI_COMMIT_BRANCH == "PUBLIC"
-
-pip_py_39:
-  stage: extended_test
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.9
-  script:
-    - git clone https://github.com/TUMcps/on-policy.git
-    - cd on-policy
-    - pip install -e .
-    - cd ..
-    - pip install .[ci]
-    - python -m pytest
-  rules:
-    - changes:
-      - .gitlab-ci.yml
-      - pyproject.toml
-    - if: $CI_COMMIT_BRANCH == "PUBLIC"
-
 pip_py_310:
   stage: extended_test
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.10
@@ -120,6 +88,22 @@ pip_py_310:
 pip_py_311:
   stage: extended_test
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.11
+  script:
+    - git clone https://github.com/TUMcps/on-policy.git
+    - cd on-policy
+    - pip install -e .
+    - cd ..
+    - pip install .[ci]
+    - python -m pytest
+  rules:
+    - changes:
+      - .gitlab-ci.yml
+      - pyproject.toml
+    - if: $CI_COMMIT_BRANCH == "PUBLIC"
+
+pip_py_312:
+  stage: extended_test
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.12
   script:
     - git clone https://github.com/TUMcps/on-policy.git
     - cd on-policy
