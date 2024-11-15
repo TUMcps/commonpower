@@ -15,7 +15,6 @@ from typing import List, Tuple, Union
 import gymnasium as gym
 import numpy as np
 import torch
-import wandb
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 from stable_baselines3 import PPO, SAC
@@ -23,6 +22,7 @@ from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
+import wandb
 from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
@@ -136,6 +136,8 @@ class BaseRunner:
         # seeding the global random number generator of the random & numpy module (will mainly be used for initializers)
         random.seed(self.seed)
         np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
         if self.start_time is None:
             self.start_time = self.sys.sample_start_date(fixed_start=self.fixed_start)
         self.sys.reset(self.start_time)
