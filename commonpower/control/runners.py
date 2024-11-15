@@ -91,7 +91,11 @@ class BaseRunner:
         # model history for logging
         self.history = history
         # seed for global random number generator
-        self.seed = seed
+        if seed is not None:
+            self.seed = seed
+        else:
+            warnings.warn("No seed given. Selecting a random seed.")
+            self.seed = random.randint(1, 100)
         # normalizing actions of controllers (just matters for RL controllers)
         self.normalize_actions = normalize_actions
 
