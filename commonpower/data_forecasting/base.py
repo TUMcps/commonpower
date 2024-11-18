@@ -29,6 +29,25 @@ class DataSource:
         """
         raise NotImplementedError
 
+    def get_date_range(self) -> List[datetime]:
+        """
+        Returns the date range data is available for.
+
+        Returns:
+            List[datetime]: [start_date, end_date]
+        """
+        raise NotImplementedError
+
+    def get_limits(self) -> dict[str, tuple[float, float]]:
+        """
+        Returns the limits for each variable in the data source.
+
+        Returns:
+            dict[str, tuple[float, float]]: {"element1": (lower_bound, upper_bound),
+                "element2": (lower_bound, upper_bound)}
+        """
+        raise NotImplementedError
+
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         """
         Return the data in this date range.
@@ -39,15 +58,6 @@ class DataSource:
 
         Returns:
             np.ndarray: Data of shape (n_horizon, n_vars).
-        """
-        raise NotImplementedError
-
-    def get_date_range(self) -> List[datetime]:
-        """
-        Returns the date range data is available for.
-
-        Returns:
-            List[datetime]: [start_date, end_date]
         """
         raise NotImplementedError
 
@@ -150,7 +160,36 @@ class DataProvider:
         """
         return self.data.get_date_range()
 
+    def _clip_obs(self, obs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """
+        Clip the observations to the limits of the data source.
+
+        Args:
+            obs (dict[str, np.ndarray]): Observations to clip.
+
+        Returns:
+            dict[str, np.ndarray]: Clipped observations.
+        """
+        limits = self.data.get_limits()
+
+        out = {}
+
+        for var, data in obs.items():
+            lb, ub = limits[var]
+            out[var] = np.clip(data, lb, ub)
+
+        return out
+
     def _filter_observed_features(self, data: np.ndarray) -> np.ndarray:
+        """
+        Filter the data to only include observable features.
+
+        Args:
+            data (np.ndarray): Data to filter.
+
+        Returns:
+            np.ndarray: Filtered data.
+        """
         if self.observable_features is None:
             return data
 
@@ -159,6 +198,15 @@ class DataProvider:
         return data[:, indices]
 
     def _get_current_obs_and_forecast(self, time: datetime) -> List[np.ndarray, np.ndarray]:
+        """
+        Returns the current observations and the forecast for the current time.
+
+        Args:
+            time (datetime): Current time.
+
+        Returns:
+            List[np.ndarray, np.ndarray]: [current_obs, forecast]
+        """
         current_obs = self._filter_observed_features(self.data(time, time))
 
         fc_input_range = self.forecaster.input_range
@@ -172,6 +220,8 @@ class DataProvider:
         """
         Returns the observations for all variables of the data provider.
         The observations span the forecast horizon.
+        If the forecaster returns values outside the limits of the data source,
+            they are clipped.
 
         Args:
             time (datetime): Current time.
@@ -186,7 +236,7 @@ class DataProvider:
 
         obs_dict = {var: out[:, i] for i, var in enumerate(self.observable_features)}
 
-        return obs_dict
+        return self._clip_obs(obs_dict)
 
     def observation_bounds(self, time: datetime) -> dict[str, list[tuple[float]]]:
         """

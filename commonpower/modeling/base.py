@@ -631,6 +631,25 @@ class ModelEntity:
                     self, f"Some variables are provided by more than one Data Provider: {sourced_params}."
                 )
 
+            # check if data sources/providers have appropriate limits
+            limits_dict_el = {el.name: el.bounds for el in self.model_elements if el.type == ElementTypes.DATA}
+            limits_dict_data = {
+                k: v
+                for limits_dict in [dp.data.get_limits() for dp in self.data_providers]
+                for k, v in limits_dict.items()
+            }
+            for el, bounds in limits_dict_el.items():
+                bounds = bounds or (-1e12, 1e12)  # el bound might be None
+                if (
+                    limits_dict_data[el][0] < bounds[0]
+                    or limits_dict_data[el][1] > bounds[1]  # lower bound  # upper bound
+                ):
+                    raise EntityError(
+                        self,
+                        f"Data provider for {el} does not adhere to the required limits. "
+                        f"Modeled limits: {bounds}, Data limits: {limits_dict_data[el]}",
+                    )
+
         self.data_provider_map = {}
         for dp in self.data_providers:
             self.data_provider_map.update({el: dp for el in dp.get_variables()})
