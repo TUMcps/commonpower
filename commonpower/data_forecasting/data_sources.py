@@ -32,6 +32,9 @@ class PandasDataSource(DataSource):
     def get_variables(self) -> List[str]:
         return self.data.columns.to_numpy()
 
+    def get_limits(self) -> dict[str, tuple[float, float]]:
+        return {col: (self.data[col].min(), self.data[col].max()) for col in self.data.columns}
+
     def apply_to_column(self, column: str, fcn: callable) -> PandasDataSource:
         """
         Allows applying a transformation to a column of the data (using pandas df.apply()).
@@ -220,6 +223,9 @@ class ArrayDataSource(DataSource):
     def get_variables(self) -> List[str]:
         return list(self.values_dict.keys())
 
+    def get_limits(self) -> dict[str, tuple[float, float]]:
+        return {key: (min(val), max(val)) for key, val in self.values_dict.items()}
+
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         n_start = int((from_time - self.start_date) / self.frequency)
         n_steps = int((to_time - from_time) / self.frequency) + 1
@@ -327,6 +333,9 @@ class ConstantDataSource(DataSource):
 
     def get_variables(self) -> List[str]:
         return list(self.values_dict.keys())
+
+    def get_limits(self) -> dict[str, tuple[float, float]]:
+        return {key: (val, val) for key, val in self.values_dict.items()}
 
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         n_steps = int((to_time - from_time) / self.frequency) + 1
