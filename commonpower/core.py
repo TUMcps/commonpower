@@ -1188,8 +1188,12 @@ class Node(ControllableModelEntity):
                 # update uncertainty if (1) uncertain forecast and (2) variable is used in robust constraint(s)
                 # We might only need condition (2) ?
                 if el.name in uncertainty_bounds_dict.keys() and self.has_pyomo_element(f"{el.name}_lb", self.instance):
-                    self.set_value(self.instance, f"{el.name}_lb", uncertainty_bounds_dict[el.name][0])
-                    self.set_value(self.instance, f"{el.name}_ub", uncertainty_bounds_dict[el.name][1])
+                    self.set_value(
+                        self.instance, f"{el.name}_lb", [bound[0] for bound in uncertainty_bounds_dict[el.name]]
+                    )
+                    self.set_value(
+                        self.instance, f"{el.name}_ub", [bound[1] for bound in uncertainty_bounds_dict[el.name]]
+                    )
 
     def _unmodeled_updates(self) -> None:
         """
