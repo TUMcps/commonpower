@@ -676,7 +676,7 @@ class EV(Component):
 
         return [dyn_p]
 
-    def _additional_updates(self) -> None:
+    def _unmodeled_updates(self) -> None:
         """
         Updates a local time variable used for tracking departure and return times.
         """
@@ -1029,7 +1029,7 @@ class _FlexLoad_Episodic(Component):
 
         return [dyn_p, upt_status]
 
-    def _additional_updates(self) -> None:
+    def _unmodeled_updates(self) -> None:
         """
         Updates the internal deadline.
         """

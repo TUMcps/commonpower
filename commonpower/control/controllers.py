@@ -409,6 +409,7 @@ class OptimalController(BaseController):
         cost_callback: Callable = single_step_cost_callback,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
+        objective_fcn: Callable = None,
     ):
         """
         Optimal controller that solves a constrained optimization problem to find the control inputs which minimize
@@ -421,6 +422,9 @@ class OptimalController(BaseController):
             solver (OptSolver, optional): solver for optimization problem
             control_input_trajectory_length (int, optional): number of time steps the controller
                 computes control inputs for
+            objective_fcn (Callable, optional): objective function of the controller.
+                The function must have the signature of a Pyomo objective function expression.
+                If None, the default objective function is used (sum of costs over all controlled top level nodes).
 
         Returns:
             OptimalController
@@ -432,6 +436,17 @@ class OptimalController(BaseController):
         self.solver = solver
 
         self.control_input_trajectory_length = control_input_trajectory_length  # only one time step for optimal control
+
+        if not objective_fcn:
+
+            def obj_fcn_mpc(model):  # default MPC objective function
+                return quicksum(
+                    [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
+                )
+
+            self.objective_fcn = obj_fcn_mpc
+        else:
+            self.objective_fcn = objective_fcn
 
     def reset_history(self) -> None:
         """
@@ -465,17 +480,9 @@ class OptimalController(BaseController):
 
         mdl = clone_from_top_level_nodes(self.top_level_nodes, self.sys_inst)
 
-        def obj_fcn_mpc(model):
-            return quicksum(
-                [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
-            )
-
-        mdl.control_obj1 = Objective(expr=obj_fcn_mpc)
+        mdl.control_obj1 = Objective(expr=self.objective_fcn)
 
         self.model = mdl
-
-        """ if robust_solve(self.model, self.solver):
-            raise ControllerError(self, "Cannot find an input satisfying all constraints") """
 
         results = self.solver.solve(self.model, warmstart=True)
         self.model.solutions.store_to(results)
