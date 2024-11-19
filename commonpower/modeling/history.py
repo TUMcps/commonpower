@@ -277,6 +277,10 @@ class ModelHistory:
                 ```
         """
 
+        NON_STATE_ELEMENTS = [ElementTypes.VAR, ElementTypes.CONSTANT, ElementTypes.DATA, ElementTypes.INPUT]
+
+        element_types = self._get_model_element_types()
+
         time_series = {}
 
         if not isinstance(histories, list):
@@ -291,6 +295,10 @@ class ModelHistory:
                     t[1][element_id][0] if isinstance(t[1][element_id], np.ndarray) else t[1][element_id]
                     for t in hist.history
                 ]  # only realized values
+
+                # for non-state variables we do not consider the terminal time step
+                vals = vals[:-1] if element_types[element_id] in NON_STATE_ELEMENTS else vals
+
                 time_series[label] = vals
 
                 plot_args = {}
@@ -299,12 +307,8 @@ class ModelHistory:
                         plot_args = style
                         break
 
-                m_type = self._get_model_element_type(element_id)
-                default_style = (
-                    'stairs'
-                    if m_type in [ElementTypes.VAR, ElementTypes.CONSTANT, ElementTypes.DATA, ElementTypes.INPUT]
-                    else ''
-                )
+                m_type = element_types[element_id]
+                default_style = 'stairs' if m_type in NON_STATE_ELEMENTS else ''
 
                 if plot_args.get('drawstyle', default_style) == 'stairs':
                     plot_args.pop('drawstyle', None)
@@ -341,19 +345,16 @@ class ModelHistory:
 
         return entities
 
-    def _get_model_element_type(self, id: str) -> ElementTypes | None:
+    def _get_model_element_types(self) -> dict[str, ElementTypes]:
+        el_types = {}
+
         entities = self._get_entity_tree()
-
-        el_name = id.split(".")[-1]
-
         for e in entities:
-            if e.get_pyomo_element_id(el_name) == id:
-                me: ModelElement
-                for me in e.model_elements:
-                    if me.name == el_name:
-                        return me.type
+            me: ModelElement
+            for me in e.model_elements:
+                el_types[e.get_pyomo_element_id(me.name)] = me.type
 
-        return None
+        return el_types
 
     def _filter_history_for_entities(self, entities: list[ModelEntity]) -> list[tuple]:
         filtered_history = []
@@ -410,61 +411,3 @@ class ModelHistory:
             history.append((t[0], val))
 
         return history
-
-    def plot_realization(
-        self,
-        entities: Union[ModelEntity, List[ModelEntity]],
-        names: Union[str, List[str]],
-        follow_node_tree: bool = False,
-        **plt_show_kwargs,
-    ) -> None:
-        """
-        DEPRECIATED! Use .plot() instead. \\
-        Lightweight interface to plot the realized history of a single or multiple model element(s).
-        The output is a pyplot line plot.
-
-        Args:
-            entities (ModelEntity): Entities the elements are associated with.
-            names (str): Local names of the elements. This is a utility since the elements are
-                stored in the history with their global id.
-            follow_node_tree (bool): If True, every matching model element in the node tree below
-                the given entities is plotted. Defaults to False.
-        """
-
-        if isinstance(names, str):
-            entities = [entities]
-            names = [names]
-
-        if follow_node_tree is True:
-            # fetch all nodes in the node tree
-            tmp = []
-            for ent in entities:
-                tmp += ent.get_children()
-            entities += tmp
-            # expand name list (we only use the first name provided and ignore anything else)
-            names = np.repeat(names[0], len(entities))
-
-        valid_entitites = []
-        for i in range(len(entities)):
-            try:
-                vals = self.get_history_for_element(entities[i], names[i])
-                valid_entitites.append(entities[i])
-                plt.plot(range(len(vals)), [x[1] for x in vals])
-            except KeyError:
-                # this entity does not have an element of that name
-                pass
-
-        plt.xticks(ticks=range(len(vals)), labels=[x[0] for x in vals])
-        plt.xticks(rotation=45)
-        plt.xlabel("Timestamp")
-        plt.ylabel("Value")
-        plt.legend(
-            [
-                f"{valid_entitites[i].get_pyomo_element_id(names[i])} ({valid_entitites[i].name})"
-                for i in range(len(valid_entitites))
-            ]
-        )
-        # plt.title(f"{entity.get_pyomo_element_id(name)} ({entity.name})")
-        plt.title("Element Realization")
-        plt.tight_layout()
-        plt.show(**plt_show_kwargs)

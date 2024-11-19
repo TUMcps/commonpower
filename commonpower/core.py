@@ -238,6 +238,24 @@ class System(ControllableModelEntity):
         for ctrl in self.controllers.values():
             ctrl.reset_history()
 
+    def unmodeled_update(self):
+        """
+        Executes the unmodeled updates of all system nodes.
+        """
+
+        for node in self.nodes:
+            node.unmodeled_update()
+
+    def update_data(self, at_time: datetime):
+        """
+        Updates the data sources of the system for the given timestamp.
+
+        Args:
+            at_time (datetime): Timestamp of "now".
+        """
+        for node in self.nodes:
+            node.update_data(at_time)
+
     def update(self):
         """
         Moves the system one time step forward.
@@ -269,7 +287,7 @@ class System(ControllableModelEntity):
 
         self.model.t = Set(initialize=range(0, self.forecast_horizon_int + 1))
 
-        # the tau value in the model is a float indicating tau / 1h, i.e., the faction/multiple of one hour.
+        # the tau value in the model is a float indicating tau / 1h, i.e., the fraction/multiple of one hour.
         tau_float = self.tau / timedelta(hours=1)
 
         # self.model.tau = Param(initialize=tau_float)
@@ -461,7 +479,6 @@ class System(ControllableModelEntity):
         self,
         obs: dict = None,
         rl_action_callback: Callable = None,
-        rl_observation_callback: Callable = None,
         history: ModelHistory = None,
     ) -> tuple[dict, dict, bool, bool, dict]:
         """
@@ -473,7 +490,6 @@ class System(ControllableModelEntity):
         Args:
             obs (dict): dictionary of {controller_id: controller_observation}
             rl_action_callback (Callable): callback used to retrieve actions from RL controllers
-            rl_observation_callback (Callable): callback used to transform observation for RL controllers if required
             model_history (ModelHistroy, optional): Instance of ModelHistory to log the system model.
 
         Returns:
@@ -519,12 +535,18 @@ class System(ControllableModelEntity):
         ]:
             raise InstanceError(self, "Solving the model with current inputs is infeasible or unbounded")
 
+        # execute unmodeled updates
+        self.unmodeled_update()
+
         # get objective values
         self.compute_cost()
 
         costs = {}
         for ctrl_id, ctrl in self.controllers.items():
             costs[ctrl_id] = ctrl.get_cost(inst)
+
+        # add verification costs
+        costs = {agent: cost + penalties[agent] for agent, cost in costs.items()}
 
         if history:
             history.log(inst, self.t)
@@ -539,8 +561,6 @@ class System(ControllableModelEntity):
 
         # get observations
         obs, _ = self.observe()
-        # add verification costs
-        costs = {agent: cost + penalties[agent] for agent, cost in costs.items()}
 
         # reached end of control horizon?
         terminated = self._is_done()
@@ -548,6 +568,61 @@ class System(ControllableModelEntity):
 
         info = {}
         return obs, costs, terminated, truncated, info
+
+    def terminal_step(
+        self,
+        history: ModelHistory = None,
+    ) -> None:
+        """
+        Terminal step of the simulation.
+        Here, we
+
+        (1) log the final state of the system to the history
+
+        (2) compute a perfect knowledge optimal control trajectory
+            and store it in the prediction horizon of the last history log.
+            This can be used to estimate the value of the terminal system state.
+            For example, the perfect knowledge trajectory would in the standard case discharge all
+            existing ESS within the horizon.
+            Accordingly, the predicted final state of t_terminal + horizon is
+            identical across different controllers, which allows for better comparability.
+
+        Args:
+            model_history (ModelHistroy, optional): Instance of ModelHistory to log the system model.
+        """
+        if not history:
+            return
+
+        # temporarily set all data providers to perfect knowledge
+        data_providers = [
+            dp for child in self.get_children() if hasattr(child, "data_providers") for dp in child.data_providers
+        ]
+        for dp in data_providers:
+            dp.set_perfect_knowledge(True)
+
+        # override forecasts with perfect knowledge predictions
+        self.update_data(self.t)
+
+        for dp in data_providers:
+            dp.set_perfect_knowledge(False)
+
+        # solve the model
+        # all inputs will be set by the global solver
+        inst = self.instance
+        results = self.solver.solve(inst, warmstart=True)
+        # catch error if model solving is infeasible
+        if results.solver.termination_condition in [
+            TerminationCondition.infeasible,
+            TerminationCondition.unbounded,
+            TerminationCondition.infeasibleOrUnbounded,
+        ]:
+            raise InstanceError(self, "Solving the model with current inputs is infeasible or unbounded")
+
+        # get objective values
+        self.compute_cost()
+
+        if history:
+            history.log(inst, self.t)
 
     def _is_done(self) -> bool:
         """
@@ -959,10 +1034,18 @@ class Node(ControllableModelEntity):
         self._update_state()
         self._step_solution()
         self._update_data(at_time)
-        self._additional_updates()
 
         for node in self.nodes:
             node.update(at_time)
+
+    def unmodeled_update(self) -> None:
+        """
+        System updates that are not modeled.
+        This could for example be the "true" dynamics of the system, or maniputations of parameters.
+        """
+        self._unmodeled_updates()
+        for node in self.nodes:
+            node.unmodeled_update()
 
     def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
         """
@@ -1071,9 +1154,23 @@ class Node(ControllableModelEntity):
                         idx=t,
                     )
 
+    def update_data(self, at_time: datetime):
+        """
+        Reads data providers for self and all subnodes.
+
+        Args:
+            at_time (datetime): Timestamp of "now".
+        """
+        self._update_data(at_time)
+        for node in self.nodes:
+            node.update_data(at_time)
+
     def _update_data(self, at_time: datetime):
         """
-        Reads data providers.
+        Reads node data providers.
+
+        Args:
+            at_time (datetime): Timestamp of "now".
         """
         obs_dict = {}
         uncertainty_bounds_dict = {}
@@ -1094,9 +1191,9 @@ class Node(ControllableModelEntity):
                     self.set_value(self.instance, f"{el.name}_lb", uncertainty_bounds_dict[el.name][0])
                     self.set_value(self.instance, f"{el.name}_ub", uncertainty_bounds_dict[el.name][1])
 
-    def _additional_updates(self) -> None:
+    def _unmodeled_updates(self) -> None:
         """
-        Additional update actions can be defined here.
+        Unmodeled update actions can be defined here.
         This could for example be the "true" dynamics of the system, or maniputations of parameters.
         """
 

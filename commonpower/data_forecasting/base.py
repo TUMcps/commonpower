@@ -142,6 +142,8 @@ class DataProvider:
         self.frequency = forecaster.frequency
         self.observable_features = observable_features or data_source.get_variables()
 
+        self.perfect_knowledge_override: bool = False
+
     def get_variables(self) -> List[str]:
         """
         Returns the list of element names that data is available for.
@@ -209,12 +211,25 @@ class DataProvider:
         """
         current_obs = self._filter_observed_features(self.data(time, time))
 
-        fc_input_range = self.forecaster.input_range
-        fc_input = self.data(time + fc_input_range[0], time + fc_input_range[1])
+        if not self.perfect_knowledge_override:
+            fc_input_range = self.forecaster.input_range
+            fc_input = self.data(time + fc_input_range[0], time + fc_input_range[1])
 
-        fc = self.forecaster(fc_input)
+            fc = self.forecaster(fc_input)
+        else:
+            fc = self.data(time + self.frequency, time + self.horizon)
 
         return current_obs, fc
+
+    def set_perfect_knowledge(self, perfect_knowledge_active: bool = False):
+        """
+        Activate or deactivate perfect knowledge override.
+
+        Args:
+            perfect_knowledge_active (bool, optional): State of the override.
+                Defaults to False.
+        """
+        self.perfect_knowledge_override = perfect_knowledge_active
 
     def observe(self, time: datetime) -> dict[str, np.ndarray]:
         """
