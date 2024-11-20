@@ -142,6 +142,8 @@ class DataProvider:
         self.frequency = forecaster.frequency
         self.observable_features = observable_features or data_source.get_variables()
 
+        self.last_provided_data: dict[str, tuple[np.ndarray]] = {}  # Stores the last provided data (obs + forecast)
+
         self.perfect_knowledge_override: bool = False
 
     def get_variables(self) -> List[str]:
@@ -209,6 +211,12 @@ class DataProvider:
         Returns:
             List[np.ndarray, np.ndarray]: [current_obs, forecast]
         """
+
+        # check if we have already provided data for this time
+        # mainly used if we need to compute forecast bounds
+        if time in self.last_provided_data:
+            return self.last_provided_data[time]
+
         current_obs = self._filter_observed_features(self.data(time, time))
 
         if not self.perfect_knowledge_override:
@@ -218,6 +226,8 @@ class DataProvider:
             fc = self.forecaster(fc_input)
         else:
             fc = self.data(time + self.frequency, time + self.horizon)
+
+        self.last_provided_data = {time: (current_obs, fc)}
 
         return current_obs, fc
 
@@ -257,10 +267,8 @@ class DataProvider:
         """
         Returns the observation bounds for all elements in the data source.
         The default is "guaranteed least-conservative bounds", i.e., the bounds are based on the absolute difference
-        between forecast and true value. This only works if the true data is available of course.
-
+        between forecast and true value. This only works if the true data is available.
         The returned bounds span the forecast horizon.
-        Returns None if the forecast is perfect.
 
         Args:
             time (datetime): Current time.
@@ -275,10 +283,14 @@ class DataProvider:
         truth = self.data(time + self.frequency, time + self.horizon)
 
         out = {}
+        limits = self.data.get_limits()
 
         for i, var in enumerate(self.observable_features):
             lb_var = fc[:, i] - abs(truth[:, i] - fc[:, i])
             ub_var = fc[:, i] + abs(truth[:, i] - fc[:, i])
+
+            lb_var = np.clip(lb_var, limits[var][0], limits[var][1])
+            ub_var = np.clip(ub_var, limits[var][0], limits[var][1])
 
             out[var] = [
                 x for x in zip(np.concatenate([current_obs[:, i], lb_var]), np.concatenate([current_obs[:, i], ub_var]))
