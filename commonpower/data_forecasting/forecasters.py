@@ -113,7 +113,7 @@ class NoisyForecaster(Forecaster):
         assert noise_bounds[0] <= noise_bounds[1], "Lower noise bound must be lower than upper bound."
         self.b = noise_bounds
         self.k = k
-        self.window_size = window_size
+        self.window_size = min(window_size, horizon // frequency)
 
     @property
     def input_range(self) -> tuple[timedelta]:
