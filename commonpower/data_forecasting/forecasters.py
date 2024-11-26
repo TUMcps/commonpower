@@ -65,6 +65,9 @@ class LookBackForecaster(Forecaster):
 
 
 class PerfectKnowledgeForecaster(Forecaster):
+
+    is_uncertain = False
+
     def __init__(self, frequency: timedelta = timedelta(hours=1), horizon: timedelta = timedelta(hours=24)):
         """
         This forecaster perfectly predicts future values.
@@ -90,6 +93,8 @@ class NoisyForecaster(Forecaster):
         frequency: timedelta = timedelta(hours=1),
         horizon: timedelta = timedelta(hours=24),
         noise_bounds: Union[float, list[float]] = [-0.1, 0.1],
+        k: int = 1,
+        window_size: int = 3,
     ):
         """
         This forecaster knows the true future values but applies a uniformly random noise to it.
@@ -100,15 +105,29 @@ class NoisyForecaster(Forecaster):
             horizon (timedelta, optional): Horizon to generate forecasts for. Defaults to timedelta(hours=24).
             noise_bounds(Union[float, list[float]], optional): Lower and upper relative noise bounds.
                 Defaults to [-0.1, 0.1].
+            k (int, optional): Number of times to apply a moving average smoothing. Defaults to 1.
+            window_size (int, optional): Window size for the moving average smoothing. Defaults to 3.
         """
         super().__init__(frequency, horizon, timedelta())
 
         assert noise_bounds[0] <= noise_bounds[1], "Lower noise bound must be lower than upper bound."
         self.b = noise_bounds
+        self.k = k
+        self.window_size = min(window_size, horizon // frequency)
 
     @property
     def input_range(self) -> tuple[timedelta]:
         return (self.frequency, self.horizon)
 
     def __call__(self, data: np.ndarray) -> np.ndarray:
-        return np.array([d + np.random.uniform(low=(abs(d) * self.b[0]), high=(abs(d) * self.b[1])) for d in data])
+        noisy_data = np.array(
+            [d + np.random.uniform(low=(abs(d) * self.b[0]), high=(abs(d) * self.b[1])) for d in data]
+        )
+
+        for _ in range(self.k):
+            for i in range(noisy_data.shape[1]):
+                noisy_data[:, i] = np.convolve(
+                    noisy_data[:, i], np.ones(self.window_size) / self.window_size, mode='same'
+                )
+
+        return noisy_data

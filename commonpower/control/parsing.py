@@ -147,7 +147,7 @@ class ListParser(BaseParser):
             action_idx = 0
             for node_action in agent_action.values():
                 for element_action in node_action.values():
-                    all_agents_actions[agent_idx][action_idx] = element_action
+                    all_agents_actions[agent_idx][action_idx] = element_action[0]
         all_agents_actions_list = list(all_agents_actions)
         all_agents_actions_list = [agent_action.reshape((1, -1)) for agent_action in all_agents_actions_list]
         return all_agents_actions_list

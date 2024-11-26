@@ -10,7 +10,7 @@ import numpy as np
 from numpy.random import rand
 
 from commonpower.core import Bus, Component, System
-from commonpower.utils.param_initialization import ParamInitializer
+from commonpower.modeling.param_initialization import ParamInitializer
 
 T = TypeVar("T")
 

@@ -14,18 +14,19 @@ from typing import Callable, Dict, List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
-import pandas as pd
 from pyomo.core import ConcreteModel, Expression, Objective, Set, quicksum, value
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 
 from commonpower.control.environments import ControlEnv
 from commonpower.data_forecasting import DataProvider
-from commonpower.modelling import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity, ModelHistory
+from commonpower.modeling.base import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity
+from commonpower.modeling.history import ModelHistory
+from commonpower.modeling.param_initialization import ParamInitializer
+from commonpower.modeling.robust_constraints import RobustConstraintBuilder
 from commonpower.utils import rsetattr
 from commonpower.utils.cp_exceptions import EntityError, InstanceError
 from commonpower.utils.default_solver import get_default_solver
-from commonpower.utils.param_initialization import ParamInitializer
 
 
 class PowerFlowModel:
@@ -192,11 +193,12 @@ class System(ControllableModelEntity):
         self.continuous_control = continuous_control
         self.solver = solver
 
+        # check if all data providers have appropriate forecast horizon and data frequency
+        for node in self.nodes:
+            node.validate_data_providers(forecast_horizon, tau)
+
         self.add_to_model(ConcreteModel())
 
-        # check if all data providers and constants have been defined
-        for node in self.nodes:
-            node.validate(forecast_horizon, tau)
         # check if all nodes with input elements have a controller assigned
         # add unique control to controller dictionary
         ctrl_ids = []
@@ -215,16 +217,16 @@ class System(ControllableModelEntity):
 
         self.date_range = self._calc_date_range()
 
-    def reset(self, at_time: Union[str, datetime]) -> None:
+    def reset(self, at_time: datetime) -> None:
         """
         Resets the system model to the state at a certain timestamp.
         It creates a clone of the system's "raw" pyomo model which will then be used for simulation.
         Furthermore, entities' parameters are initialized according to their configuration.
 
         Args:
-            at_time (Union[str, datetime]): Timestamp to begin the simulation from.
+            at_time (datetime): Timestamp to begin the simulation from.
         """
-        self.t = pd.to_datetime(at_time, dayfirst=True) if isinstance(at_time, str) else at_time
+        self.t = at_time
         self.start_time = self.t
         self.instance = self.model.clone()
 
@@ -235,6 +237,24 @@ class System(ControllableModelEntity):
         # reset training history of RL controllers
         for ctrl in self.controllers.values():
             ctrl.reset_history()
+
+    def unmodeled_update(self):
+        """
+        Executes the unmodeled updates of all system nodes.
+        """
+
+        for node in self.nodes:
+            node.unmodeled_update()
+
+    def update_data(self, at_time: datetime):
+        """
+        Updates the data sources of the system for the given timestamp.
+
+        Args:
+            at_time (datetime): Timestamp of "now".
+        """
+        for node in self.nodes:
+            node.update_data(at_time)
 
     def update(self):
         """
@@ -267,7 +287,7 @@ class System(ControllableModelEntity):
 
         self.model.t = Set(initialize=range(0, self.forecast_horizon_int + 1))
 
-        # the tau value in the model is a float indicating tau / 1h, i.e., the faction/multiple of one hour.
+        # the tau value in the model is a float indicating tau / 1h, i.e., the fraction/multiple of one hour.
         tau_float = self.tau / timedelta(hours=1)
 
         # self.model.tau = Param(initialize=tau_float)
@@ -459,7 +479,6 @@ class System(ControllableModelEntity):
         self,
         obs: dict = None,
         rl_action_callback: Callable = None,
-        rl_observation_callback: Callable = None,
         history: ModelHistory = None,
     ) -> tuple[dict, dict, bool, bool, dict]:
         """
@@ -471,7 +490,6 @@ class System(ControllableModelEntity):
         Args:
             obs (dict): dictionary of {controller_id: controller_observation}
             rl_action_callback (Callable): callback used to retrieve actions from RL controllers
-            rl_observation_callback (Callable): callback used to transform observation for RL controllers if required
             model_history (ModelHistroy, optional): Instance of ModelHistory to log the system model.
 
         Returns:
@@ -517,12 +535,18 @@ class System(ControllableModelEntity):
         ]:
             raise InstanceError(self, "Solving the model with current inputs is infeasible or unbounded")
 
+        # execute unmodeled updates
+        self.unmodeled_update()
+
         # get objective values
         self.compute_cost()
 
         costs = {}
         for ctrl_id, ctrl in self.controllers.items():
             costs[ctrl_id] = ctrl.get_cost(inst)
+
+        # add verification costs
+        costs = {agent: cost + penalties[agent] for agent, cost in costs.items()}
 
         if history:
             history.log(inst, self.t)
@@ -537,8 +561,6 @@ class System(ControllableModelEntity):
 
         # get observations
         obs, _ = self.observe()
-        # add verification costs
-        costs = {agent: cost + penalties[agent] for agent, cost in costs.items()}
 
         # reached end of control horizon?
         terminated = self._is_done()
@@ -546,6 +568,61 @@ class System(ControllableModelEntity):
 
         info = {}
         return obs, costs, terminated, truncated, info
+
+    def terminal_step(
+        self,
+        history: ModelHistory = None,
+    ) -> None:
+        """
+        Terminal step of the simulation.
+        Here, we
+
+        (1) log the final state of the system to the history
+
+        (2) compute a perfect knowledge optimal control trajectory
+            and store it in the prediction horizon of the last history log.
+            This can be used to estimate the value of the terminal system state.
+            For example, the perfect knowledge trajectory would in the standard case discharge all
+            existing ESS within the horizon.
+            Accordingly, the predicted final state of t_terminal + horizon is
+            identical across different controllers, which allows for better comparability.
+
+        Args:
+            model_history (ModelHistroy, optional): Instance of ModelHistory to log the system model.
+        """
+        if not history:
+            return
+
+        # temporarily set all data providers to perfect knowledge
+        data_providers = [
+            dp for child in self.get_children() if hasattr(child, "data_providers") for dp in child.data_providers
+        ]
+        for dp in data_providers:
+            dp.set_perfect_knowledge(True)
+
+        # override forecasts with perfect knowledge predictions
+        self.update_data(self.t)
+
+        for dp in data_providers:
+            dp.set_perfect_knowledge(False)
+
+        # solve the model
+        # all inputs will be set by the global solver
+        inst = self.instance
+        results = self.solver.solve(inst, warmstart=True)
+        # catch error if model solving is infeasible
+        if results.solver.termination_condition in [
+            TerminationCondition.infeasible,
+            TerminationCondition.unbounded,
+            TerminationCondition.infeasibleOrUnbounded,
+        ]:
+            raise InstanceError(self, "Solving the model with current inputs is infeasible or unbounded")
+
+        # get objective values
+        self.compute_cost()
+
+        if history:
+            history.log(inst, self.t)
 
     def _is_done(self) -> bool:
         """
@@ -759,9 +836,9 @@ class Node(ControllableModelEntity):
         self.tau = None
         self.horizon = None
 
-        self.nodes = []
+        self.robust_constraint_builder = None  # set in add_to_model()
 
-        self.data_providers = []
+        self.nodes = []
 
     def set_id(self, parent_identity: str = "", number: int = 0) -> None:
         """
@@ -779,20 +856,6 @@ class Node(ControllableModelEntity):
         own_id = self.CLASS_INDEX + str(parent_number) + str(number)
         # possible alternative: own_id = self.CLASS_INDEX + "_" + '%03x' % random.randrange(16**3)
         self.id = parent_identity + "." + own_id if parent_identity != "" else own_id
-
-    def add_data_provider(self, data_provider: DataProvider) -> Component:
-        """
-        Adds a data provider to the component.
-        It will be checked during validation if all model elements which require a data provider are covered.
-
-        Args:
-            data_provider (DataProvider): Data provider instance.
-
-        Returns:
-            Component: Component instance.
-        """
-        self.data_providers.append(data_provider)
-        return self
 
     def add_to_model(self, model: ConcreteModel, **kwargs) -> None:
         """
@@ -827,25 +890,20 @@ class Node(ControllableModelEntity):
 
         self._check_config(self.config)
 
+        self.robust_constraint_builder = RobustConstraintBuilder(self)
+        self.robust_constraint_builder.expand_robust_constraints()
+
         for el in self.model_elements:
             self._add_model_element(el)
 
-    def validate(self, forecast_horizon: timedelta, tau: timedelta) -> None:
+    def validate_data_providers(self, forecast_horizon: timedelta, tau: timedelta) -> None:
         """
-        Validates if data providers have compatible configurations and if controllers have been defined appropriately.
+        Validates if data providers have compatible configurations.
 
         Args:
             forecast_horizon (timedelta): Forecast horizon.
             tau (timedelta): Sample time.
         """
-        # check if all required dataproviders are attached
-        needed_from_dataprovider = [el.name for el in self.model_elements if el.type == ElementTypes.DATA]
-        if needed_from_dataprovider:
-            if not self.data_providers:
-                raise EntityError(self, f"Data Providers for {needed_from_dataprovider} required.")
-            sourced_params = np.concatenate([s.get_variables() for s in self.data_providers], axis=None)
-            if not all(x in sourced_params for x in needed_from_dataprovider):
-                raise EntityError(self, f"Data Providers for {needed_from_dataprovider} required.")
 
         # check if all dataproviders have an appropriate forecast horizon, data frequency
         for dp in self.data_providers:
@@ -862,18 +920,8 @@ class Node(ControllableModelEntity):
                     f" {dp.frequency}",
                 )
 
-        # check if all states have corresponding initializer instances in the config
-        states = [el for el in self.model_elements if el.type == ElementTypes.STATE]
-        for s in states:
-            if not isinstance(self.config[f"{s.name}_init"], ParamInitializer):
-                raise EntityError(
-                    self,
-                    f"The initializer of state init parameter {s.name}_init must be of type"
-                    f" {ParamInitializer.__name__}",
-                )
-
         for node in self.nodes:
-            node.validate(forecast_horizon, tau)
+            node.validate_data_providers(forecast_horizon, tau)
 
         self.is_valid = True
 
@@ -949,6 +997,24 @@ class Node(ControllableModelEntity):
                 self.set_value(
                     self.instance, el.name, self.get_value(self.instance, f"{el.name}_init"), idx=0, fix_value=True
                 )
+                try:
+                    # try to set the bound variables of uncertain states
+                    self.set_value(
+                        self.instance,
+                        f"{el.name}_lb",
+                        self.get_value(self.instance, f"{el.name}_init"),
+                        idx=0,
+                        fix_value=True,
+                    )
+                    self.set_value(
+                        self.instance,
+                        f"{el.name}_ub",
+                        self.get_value(self.instance, f"{el.name}_init"),
+                        idx=0,
+                        fix_value=True,
+                    )
+                except EntityError:
+                    pass
 
         self._update_data(at_time)
 
@@ -968,10 +1034,18 @@ class Node(ControllableModelEntity):
         self._update_state()
         self._step_solution()
         self._update_data(at_time)
-        self._additional_updates()
 
         for node in self.nodes:
             node.update(at_time)
+
+    def unmodeled_update(self) -> None:
+        """
+        System updates that are not modeled.
+        This could for example be the "true" dynamics of the system, or maniputations of parameters.
+        """
+        self._unmodeled_updates()
+        for node in self.nodes:
+            node.unmodeled_update()
 
     def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
         """
@@ -1052,6 +1126,7 @@ class Node(ControllableModelEntity):
         for el in [el for el in self.model_elements if el.type == ElementTypes.STATE and el.indexed is True]:
             # one timestep forward, i.e. state[t] <- state[t+1]
             values = self.get_value(self.instance, el.name)
+            values = np.round(values, 5)  # round to avoid warnings / numerical issues
             for t in range(0, self.horizon):
                 self.set_value(
                     self.instance,
@@ -1070,6 +1145,7 @@ class Node(ControllableModelEntity):
             if el.type in [ElementTypes.VAR, ElementTypes.INPUT, ElementTypes.COST] and el.indexed is True:
                 # one timestep forward, i.e. var[t] <- var[t+1]
                 values = self.get_value(self.instance, el.name)
+                values = np.round(values, 5)  # round to avoid warnings / numerical issues
                 for t in range(0, self.horizon):
                     self.set_value(
                         self.instance,
@@ -1078,22 +1154,50 @@ class Node(ControllableModelEntity):
                         idx=t,
                     )
 
+    def update_data(self, at_time: datetime):
+        """
+        Reads data providers for self and all subnodes.
+
+        Args:
+            at_time (datetime): Timestamp of "now".
+        """
+        self._update_data(at_time)
+        for node in self.nodes:
+            node.update_data(at_time)
+
     def _update_data(self, at_time: datetime):
         """
-        Reads data providers.
+        Reads node data providers.
+
+        Args:
+            at_time (datetime): Timestamp of "now".
         """
         obs_dict = {}
+        uncertainty_bounds_dict = {}
+
         for dp in self.data_providers:
             obs_dict.update(dp.observe(at_time))
+            if dp.forecaster.is_uncertain:
+                uncertainty_bounds_dict.update(dp.observation_bounds(at_time))
 
         # update model
         for el in self.model_elements:
             if el.type == ElementTypes.DATA:
                 self.set_value(self.instance, el.name, obs_dict[el.name])
 
-    def _additional_updates(self) -> None:
+                # update uncertainty if (1) uncertain forecast and (2) variable is used in robust constraint(s)
+                # We might only need condition (2) ?
+                if el.name in uncertainty_bounds_dict.keys() and self.has_pyomo_element(f"{el.name}_lb", self.instance):
+                    self.set_value(
+                        self.instance, f"{el.name}_lb", [bound[0] for bound in uncertainty_bounds_dict[el.name]]
+                    )
+                    self.set_value(
+                        self.instance, f"{el.name}_ub", [bound[1] for bound in uncertainty_bounds_dict[el.name]]
+                    )
+
+    def _unmodeled_updates(self) -> None:
         """
-        Additional update actions can be defined here.
+        Unmodeled update actions can be defined here.
         This could for example be the "true" dynamics of the system, or maniputations of parameters.
         """
 

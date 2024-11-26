@@ -9,8 +9,9 @@ import pyomo.environ as pyo
 from pyomo.core import ConcreteModel, Expression, quicksum
 
 from commonpower.core import Bus, Node, StructureNode
-from commonpower.modelling import ElementTypes as et
-from commonpower.modelling import MIPExpressionBuilder, ModelElement
+from commonpower.modeling.base import ElementTypes as et
+from commonpower.modeling.base import ModelElement
+from commonpower.modeling.mip_builder import MIPExpressionBuilder
 from commonpower.utils.cp_exceptions import EntityError
 
 

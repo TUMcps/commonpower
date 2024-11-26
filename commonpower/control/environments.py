@@ -9,7 +9,8 @@ from typing import Optional, Tuple, Union
 import gymnasium as gym
 import numpy as np
 
-from commonpower.modelling import ControllableModelEntity, ModelHistory
+from commonpower.modeling.base import ControllableModelEntity
+from commonpower.modeling.history import ModelHistory
 from commonpower.utils.cp_exceptions import ControllerError
 
 

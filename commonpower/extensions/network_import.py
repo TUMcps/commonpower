@@ -9,12 +9,12 @@ from pandapower.auxiliary import pandapowerNet
 
 from commonpower.core import *
 from commonpower.extensions.factories import Factory
-from commonpower.modelling import *
-from commonpower.models.busses import *
+from commonpower.modeling.base import *
+from commonpower.modeling.param_initialization import *
+from commonpower.models.buses import *
 from commonpower.models.components import *
 from commonpower.models.lines import *
 from commonpower.models.powerflow import *
-from commonpower.utils.param_initialization import *
 
 
 class PandaPowerImporter:

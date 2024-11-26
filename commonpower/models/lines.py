@@ -6,8 +6,8 @@ from __future__ import annotations
 import pyomo.environ as pyo
 
 from commonpower.core import Line
-from commonpower.modelling import ElementTypes as et
-from commonpower.modelling import ModelElement
+from commonpower.modeling.base import ElementTypes as et
+from commonpower.modeling.base import ModelElement
 
 
 class BasicLine(Line):

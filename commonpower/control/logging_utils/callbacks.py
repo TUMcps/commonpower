@@ -28,7 +28,7 @@ class SafetyCallback(BaseCallback):
             None
 
         """
-        eps_history = self.training_env.get_attr("episode_history")[0]
+        eps_history = self.training_env.envs[0].get_wrapper_attr("episode_history")
         # ToDo: have to adjust for training with multiple vectorized envs!
         mean_episode_penalty = safe_mean([ep_info["mean_penalty"] for ep_info in eps_history])
         mean_n_corrections = safe_mean([ep_info["n_corrections"] for ep_info in eps_history])
@@ -66,7 +66,7 @@ class WandBSafetyCallback(WandbCallback):
             None
 
         """
-        eps_history = self.training_env.get_attr("episode_history")[0]
+        eps_history = self.training_env.envs[0].get_wrapper_attr("episode_history")
         # ToDo: have to adjust for training with multiple vectorized envs!
         mean_episode_penalty = safe_mean([ep_info["mean_penalty"] for ep_info in eps_history])
         mean_n_corrections = safe_mean([ep_info["n_corrections"] for ep_info in eps_history])
@@ -205,7 +205,7 @@ class MARLBaseCallback:
 
         """
         # ToDo: have to adjust for training with multiple vectorized envs!
-        eps_history = self.training_env.get_attr("episode_history")[0]
+        eps_history = self.training_env.envs[0].get_wrapper_attr("episode_history")
         mean_penalties = [
             safe_mean([ep_info["mean_penalty"] for ep_info in eps_history[i]]) for i in range(self.num_agents)
         ]

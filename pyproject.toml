@@ -1,6 +1,6 @@
 [project]
 name = "commonpower"
-version = "0.3.2"
+version = "0.4.0"
 authors = [
   { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
   { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
@@ -8,7 +8,7 @@ authors = [
 description = "A package for the exploration of safe single/multi-agent reinforcement learning in smart grids."
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -29,22 +29,22 @@ dependencies = [
   "wandb",
   "tensorboard",
   "matplotlib",
-  "gurobipy",
-  "pyomo",
+  "gurobipy==11.0.0",
+  "pyomo==6.8.0",
   "prettytable",
-  "stable-baselines3",
-  "pandapower",
+  "stable-baselines3==2.1.0",
+  "pandapower==2.14.11",
   "tqdm",
-  "pydantic",
+  "pydantic >= 2.7.0",
   "numpy <= 1.26",
   "jsonpickle",
   "pymongo",
 ]
 
 [project.optional-dependencies]
-ci = ["pytest", "pandapower"]
+ci = ["pytest"]
 nn = ["torch", "ray[tune]", "hyperopt", "scikit-learn"]
-full = ["jupyter", "pandapower", "torch", "ray[tune]", "hyperopt", "scikit-learn"]
+full = ["jupyter", "torch", "ray[tune]", "hyperopt", "scikit-learn"]
 
 docs = [
   "myst_parser", 
@@ -61,7 +61,7 @@ docs = [
 # Formatting
 [tool.black]
 line-length = 120
-target-version = ["py38", "py39", "py310", "py311"]
+target-version = ["py310", "py311"]
 skip-string-normalization = true
 
 [tool.isort]

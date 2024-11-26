@@ -3,6 +3,12 @@ Helper functions for control module.
 """
 
 
+from pyomo.core import ConcreteModel, Objective
+
+from commonpower.core import System
+from commonpower.modeling.base import ModelEntity
+
+
 def t2n(x):
     """
     Transform a torch tensor to a numpy array.
@@ -54,3 +60,24 @@ def single_step_cost_callback(ctrl, sys_inst) -> float:
     cost_values = [cost[0] for cost in cost_values]
     ctrl_cost = sum(cost_values)
     return ctrl_cost
+
+
+def clone_from_top_level_nodes(
+    nodes: list[ModelEntity], model_instance: ConcreteModel, clone_objectives: bool = False
+) -> ConcreteModel:
+    """
+    Generates a new model instance from the given top-level nodes while also cloning their children.
+    """
+    mdl = ConcreteModel()
+
+    for node in nodes:
+        if isinstance(node, System):
+            mdl = model_instance.clone()
+        else:
+            setattr(mdl, node.id.split(".")[-1], node.get_self_as_pyomo_block(model_instance).clone())
+
+    if not clone_objectives:
+        for objective in mdl.component_objects(Objective, descend_into=True):
+            mdl.del_component(objective)
+
+    return mdl

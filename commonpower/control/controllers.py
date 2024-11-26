@@ -9,7 +9,6 @@ from typing import Callable, List, Tuple, Union
 import gymnasium as gym
 import numpy as np
 import pandas as pd
-import pyomo.environ as pyo
 import torch as th
 from pyomo.core import ConcreteModel, Objective, quicksum
 from pyomo.opt import TerminationCondition
@@ -17,9 +16,9 @@ from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
-from commonpower.control.controller_utils import single_step_cost_callback
+from commonpower.control.util import clone_from_top_level_nodes, single_step_cost_callback
 from commonpower.core import Node, System
-from commonpower.modelling import ControllableModelEntity, ElementTypes
+from commonpower.modeling.base import ControllableModelEntity, ElementTypes
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
 from commonpower.utils.default_solver import get_default_solver
 
@@ -410,6 +409,7 @@ class OptimalController(BaseController):
         cost_callback: Callable = single_step_cost_callback,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
+        objective_fcn: Callable = None,
     ):
         """
         Optimal controller that solves a constrained optimization problem to find the control inputs which minimize
@@ -422,6 +422,9 @@ class OptimalController(BaseController):
             solver (OptSolver, optional): solver for optimization problem
             control_input_trajectory_length (int, optional): number of time steps the controller
                 computes control inputs for
+            objective_fcn (Callable, optional): objective function of the controller.
+                The function must have the signature of a Pyomo objective function expression.
+                If None, the default objective function is used (sum of costs over all controlled top level nodes).
 
         Returns:
             OptimalController
@@ -433,6 +436,17 @@ class OptimalController(BaseController):
         self.solver = solver
 
         self.control_input_trajectory_length = control_input_trajectory_length  # only one time step for optimal control
+
+        if not objective_fcn:
+
+            def obj_fcn_mpc(model):  # default MPC objective function
+                return quicksum(
+                    [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
+                )
+
+            self.objective_fcn = obj_fcn_mpc
+        else:
+            self.objective_fcn = objective_fcn
 
     def reset_history(self) -> None:
         """
@@ -463,23 +477,10 @@ class OptimalController(BaseController):
         """
         # get current system pyomo instance
         self.sys_inst = self.nodes[0].instance
-        mdl = ConcreteModel()
 
-        for node in self.top_level_nodes:
-            if isinstance(node, System):
-                mdl = self.sys_inst.clone()
-            else:
-                setattr(mdl, node.id.split(".")[-1], node.get_self_as_pyomo_block(self.sys_inst).clone())
+        mdl = clone_from_top_level_nodes(self.top_level_nodes, self.sys_inst)
 
-        def obj_fcn_mpc(model):
-            return quicksum(
-                [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
-            )
-
-        # we want to delete existing objectives from the original system and define our own for the controller
-        for objective in mdl.component_objects(pyo.Objective, descend_into=True):
-            mdl.del_component(objective)
-        mdl.control_obj1 = Objective(expr=obj_fcn_mpc)
+        mdl.control_obj1 = Objective(expr=self.objective_fcn)
 
         self.model = mdl
 
@@ -491,6 +492,7 @@ class OptimalController(BaseController):
             TerminationCondition.unbounded,
             TerminationCondition.infeasibleOrUnbounded,
         ]:
+            self.model.pprint()
             raise EntityError(self.model, "Cannot find an input satisfying all constraints")
 
         node_actions = {}
@@ -820,7 +822,9 @@ class RLControllerMA(RLBaseController):
         self.policy_kwargs = config
         self._check_alg_config()
         share_observation_space = (
-            env.share_observation_space[0] if self.policy_kwargs.use_centralized_V else self.flattened_obs_space
+            env.get_wrapper_attr("share_observation_space")[0]
+            if self.policy_kwargs.use_centralized_V
+            else self.flattened_obs_space
         )
 
         # policy network

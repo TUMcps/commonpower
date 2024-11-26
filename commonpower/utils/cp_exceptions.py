@@ -6,7 +6,7 @@ from pyomo.core import ConcreteModel
 
 if TYPE_CHECKING:
     from commonpower.control.controllers import BaseController
-    from commonpower.modelling import ModelEntity
+    from commonpower.modeling.base import ModelEntity
 
 
 class EntityError(Exception):

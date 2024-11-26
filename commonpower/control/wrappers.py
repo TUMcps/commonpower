@@ -126,9 +126,9 @@ class SingleAgentWrapper(gym.Wrapper):
         """
         super().__init__(env)
         self.env = env
-        if len(self.controllers) > 1:
+        if len(self.env.get_wrapper_attr("controllers")) > 1:
             raise ValueError("SingleAgentWrapper cannot handle more than 1 agent")
-        self.ctrl_id = list(self.env.controllers.keys())[0]
+        self.ctrl_id = list(self.env.get_wrapper_attr("controllers").keys())[0]
         # training history
         self.train_history = {}
         self.episode_history = deque(maxlen=100)
@@ -198,8 +198,8 @@ class SingleAgentWrapper(gym.Wrapper):
         reward = reward[self.ctrl_id]
         obs = self._unpack_obs(obs)
         if terminated:
-            self.train_history = self.env.train_history[self.ctrl_id]
-            self.episode_history = self.env.episode_history[self.ctrl_id]
+            self.train_history = self.env.get_wrapper_attr("train_history")[self.ctrl_id]
+            self.episode_history = self.env.get_wrapper_attr("episode_history")[self.ctrl_id]
         return obs, reward, terminated, truncated, info
 
     def _unpack_obs(self, obs: dict) -> np.ndarray:
@@ -245,7 +245,7 @@ class RecordTransitionsWrapper(gym.Wrapper):
         """
         super().__init__(env)
 
-        if len(env.unwrapped.controllers) > 1:
+        if len(env.get_wrapper_attr("controllers")) > 1:
             raise ValueError("RecordTransitionsWrapper cannot handle more than 1 agent")
 
         self.tuple_db = tuple_db
@@ -311,7 +311,7 @@ class MultiAgentWrapper(gym.Wrapper):
         """
         super().__init__(env)
         self.env = env
-        self.n_agents = len(self.controllers)
+        self.n_agents = len(self.get_wrapper_attr("controllers"))
         # training history
         self.train_history = {}
         self.episode_history = {}
@@ -332,7 +332,9 @@ class MultiAgentWrapper(gym.Wrapper):
             share_low[n_obs : n_obs + n_agent_obs] = agent_obs.low
             share_high[n_obs : n_obs + n_agent_obs] = agent_obs.high
             n_obs = n_obs + n_agent_obs
-        self.share_observation_space = [gym.spaces.Box(low=share_low, high=share_high) for _ in range(self.n_agents)]
+        self.unwrapped.share_observation_space = [
+            gym.spaces.Box(low=share_low, high=share_high) for _ in range(self.n_agents)
+        ]
 
     def reset(self, *, seed=None, options=None):
         """
@@ -379,7 +381,7 @@ class MultiAgentWrapper(gym.Wrapper):
         action_dict = list_to_ctrl_dict(action, self.original_action_keys)
 
         for ctrl in action_dict:
-            dummy_action = self.controllers[ctrl].input_space.sample()
+            dummy_action = self.env.get_wrapper_attr("controllers")[ctrl].input_space.sample()
             act_count = 0
             # fill action dictionary with values
             for n_id, n_act in dummy_action.items():
@@ -393,8 +395,8 @@ class MultiAgentWrapper(gym.Wrapper):
         obs = self._unpack_obs(obs)
         obs = ctrl_dict_to_list(obs)
         if terminated:
-            self.train_history = ctrl_dict_to_list(self.env.train_history)
-            self.episode_history = ctrl_dict_to_list(self.env.episode_history)
+            self.train_history = ctrl_dict_to_list(self.env.get_wrapper_attr("train_history"))
+            self.episode_history = ctrl_dict_to_list(self.env.get_wrapper_attr("episode_history"))
         rewards = ctrl_dict_to_list(rewards)
         return obs, rewards, terminated, truncated, info
 
@@ -412,7 +414,7 @@ class MultiAgentWrapper(gym.Wrapper):
         """
 
         # Get list of all controller ids
-        ctrl_ids = list(self.env.controllers.keys())
+        ctrl_ids = list(self.env.get_wrapper_attr("controllers").keys())
 
         # Initialize an empty dictionary for new observations
         new_obs_dict = {}
@@ -460,7 +462,7 @@ class MultiAgentWrapper(gym.Wrapper):
                     agent_higher = np.concatenate((agent_higher, element_action_space.high))
             action_keys[agent_id] = agent_action_keys
             flat_agent_action_space = gym.spaces.Box(low=agent_lower, high=agent_higher)
-            self.controllers[agent_id].flattened_input_space = flat_agent_action_space
+            self.get_wrapper_attr("controllers")[agent_id].flattened_input_space = flat_agent_action_space
             env_action_space.append(flat_agent_action_space)
 
         return env_action_space, action_keys
@@ -493,7 +495,7 @@ class MultiAgentWrapper(gym.Wrapper):
                 lower = np.concatenate((lower, element_obs_space.low))
                 higher = np.concatenate((higher, element_obs_space.high))
             flat_agent_obs_space = gym.spaces.Box(low=lower, high=higher)
-            self.controllers[agent_id].flattened_obs_space = flat_agent_obs_space
+            self.env.get_wrapper_attr("controllers")[agent_id].flattened_obs_space = flat_agent_obs_space
             env_obs_space.append(flat_agent_obs_space)
 
         return env_obs_space

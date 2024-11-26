@@ -4,11 +4,9 @@ Base classes and generic functionality for data sources and forecasters.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import List, Union
+from typing import List
 
 import numpy as np
-
-from commonpower.utils import to_datetime
 
 
 class DataSource:
@@ -31,6 +29,25 @@ class DataSource:
         """
         raise NotImplementedError
 
+    def get_date_range(self) -> List[datetime]:
+        """
+        Returns the date range data is available for.
+
+        Returns:
+            List[datetime]: [start_date, end_date]
+        """
+        raise NotImplementedError
+
+    def get_limits(self) -> dict[str, tuple[float, float]]:
+        """
+        Returns the limits for each variable in the data source.
+
+        Returns:
+            dict[str, tuple[float, float]]: {"element1": (lower_bound, upper_bound),
+                "element2": (lower_bound, upper_bound)}
+        """
+        raise NotImplementedError
+
     def __call__(self, from_time: datetime, to_time: datetime) -> np.ndarray:
         """
         Return the data in this date range.
@@ -44,15 +61,6 @@ class DataSource:
         """
         raise NotImplementedError
 
-    def get_date_range(self) -> List[datetime]:
-        """
-        Returns the date range data is available for.
-
-        Returns:
-            List[datetime]: [start_date, end_date]
-        """
-        raise NotImplementedError
-
     def __len__(self) -> int:
         """
         Returns the number of elements in the dataset.
@@ -61,6 +69,9 @@ class DataSource:
 
 
 class Forecaster:
+
+    is_uncertain = True  # Generally, forecasts are uncertain
+
     def __init__(
         self,
         frequency: timedelta = timedelta(hours=1),
@@ -131,6 +142,10 @@ class DataProvider:
         self.frequency = forecaster.frequency
         self.observable_features = observable_features or data_source.get_variables()
 
+        self.last_provided_data: dict[str, tuple[np.ndarray]] = {}  # Stores the last provided data (obs + forecast)
+
+        self.perfect_knowledge_override: bool = False
+
     def get_variables(self) -> List[str]:
         """
         Returns the list of element names that data is available for.
@@ -149,7 +164,36 @@ class DataProvider:
         """
         return self.data.get_date_range()
 
+    def _clip_obs(self, obs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """
+        Clip the observations to the limits of the data source.
+
+        Args:
+            obs (dict[str, np.ndarray]): Observations to clip.
+
+        Returns:
+            dict[str, np.ndarray]: Clipped observations.
+        """
+        limits = self.data.get_limits()
+
+        out = {}
+
+        for var, data in obs.items():
+            lb, ub = limits[var]
+            out[var] = np.clip(data, lb, ub)
+
+        return out
+
     def _filter_observed_features(self, data: np.ndarray) -> np.ndarray:
+        """
+        Filter the data to only include observable features.
+
+        Args:
+            data (np.ndarray): Data to filter.
+
+        Returns:
+            np.ndarray: Filtered data.
+        """
         if self.observable_features is None:
             return data
 
@@ -158,28 +202,58 @@ class DataProvider:
         return data[:, indices]
 
     def _get_current_obs_and_forecast(self, time: datetime) -> List[np.ndarray, np.ndarray]:
+        """
+        Returns the current observations and the forecast for the current time.
+
+        Args:
+            time (datetime): Current time.
+
+        Returns:
+            List[np.ndarray, np.ndarray]: [current_obs, forecast]
+        """
+
+        # check if we have already provided data for this time
+        # mainly used if we need to compute forecast bounds
+        if time in self.last_provided_data:
+            return self.last_provided_data[time]
+
         current_obs = self._filter_observed_features(self.data(time, time))
 
-        fc_input_range = self.forecaster.input_range
-        fc_input = self.data(time + fc_input_range[0], time + fc_input_range[1])
+        if not self.perfect_knowledge_override:
+            fc_input_range = self.forecaster.input_range
+            fc_input = self.data(time + fc_input_range[0], time + fc_input_range[1])
 
-        fc = self.forecaster(fc_input)
+            fc = self.forecaster(fc_input)
+        else:
+            fc = self.data(time + self.frequency, time + self.horizon)
+
+        self.last_provided_data = {time: (current_obs, fc)}
 
         return current_obs, fc
 
-    def observe(self, time: Union[str, datetime]) -> dict[str, np.ndarray]:
+    def set_perfect_knowledge(self, perfect_knowledge_active: bool = False):
+        """
+        Activate or deactivate perfect knowledge override.
+
+        Args:
+            perfect_knowledge_active (bool, optional): State of the override.
+                Defaults to False.
+        """
+        self.perfect_knowledge_override = perfect_knowledge_active
+
+    def observe(self, time: datetime) -> dict[str, np.ndarray]:
         """
         Returns the observations for all variables of the data provider.
         The observations span the forecast horizon.
+        If the forecaster returns values outside the limits of the data source,
+            they are clipped.
 
         Args:
-            time (Union[str, datetime]): Current time.
+            time (datetime): Current time.
 
         Returns:
             dict: {"<element1>": np.ndarray, "<element2>": np.ndarray}.
         """
-
-        time = to_datetime(time)
 
         current_obs, fc = self._get_current_obs_and_forecast(time)
 
@@ -187,36 +261,39 @@ class DataProvider:
 
         obs_dict = {var: out[:, i] for i, var in enumerate(self.observable_features)}
 
-        return obs_dict
+        return self._clip_obs(obs_dict)
 
-    def observation_bounds(self, time: Union[str, datetime]) -> dict[str, tuple[np.ndarray]]:
+    def observation_bounds(self, time: datetime) -> dict[str, list[tuple[float]]]:
         """
         Returns the observation bounds for all elements in the data source.
         The default is "guaranteed least-conservative bounds", i.e., the bounds are based on the absolute difference
-        between forecast and true value. This only works if the true data is available of course.
-
+        between forecast and true value. This only works if the true data is available.
         The returned bounds span the forecast horizon.
 
         Args:
-            time (Union[str, datetime]): Current time.
+            time (datetime): Current time.
 
         Returns:
-            dict (dict[str, tuple(np.ndarray)]): {"element1": (lower bounds, upper bounds), \
-                "element2": (lower bounds, upper bounds)}
+            dict (dict[str, list[tuple[float]]]): {"element1": [(lb_0, ub_0), (lb_1, ub_1)], \
+                "element2": [(lb_0, ub_0), (lb_1, ub_1)]}
         """
-
-        time = to_datetime(time)
 
         current_obs, fc = self._get_current_obs_and_forecast(time)
 
         truth = self.data(time + self.frequency, time + self.horizon)
 
         out = {}
+        limits = self.data.get_limits()
 
-        for i, var in enumerate(self.data.get_variables()):
+        for i, var in enumerate(self.observable_features):
             lb_var = fc[:, i] - abs(truth[:, i] - fc[:, i])
             ub_var = fc[:, i] + abs(truth[:, i] - fc[:, i])
 
-            out[var] = (np.concatenate([current_obs[:, i], lb_var]), np.concatenate([current_obs[:, i], ub_var]))
+            lb_var = np.clip(lb_var, limits[var][0], limits[var][1])
+            ub_var = np.clip(ub_var, limits[var][0], limits[var][1])
+
+            out[var] = [
+                x for x in zip(np.concatenate([current_obs[:, i], lb_var]), np.concatenate([current_obs[:, i], ub_var]))
+            ]
 
         return out

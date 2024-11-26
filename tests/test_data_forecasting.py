@@ -28,7 +28,7 @@ class TestForecasting(unittest.TestCase):
         
         self.ds2 = ConstantDataSource({"test": 2.5}, self.ds.get_date_range())
 
-        self.test_time = "15.10.2016"
+        self.test_time = datetime(2016, 10, 15)
 
     def test_ConstantForecaster(self):
         dp = DataProvider(self.ds, ConstantForecaster(self.freq, self.horizon))
@@ -65,17 +65,19 @@ class TestForecasting(unittest.TestCase):
 
     def test_NoisyForecaster(self):
         noise_bounds = [-0.3, 0.1]
-        dp = DataProvider(self.ds, NoisyForecaster(self.freq, self.horizon, noise_bounds))
+        dp = DataProvider(self.ds, NoisyForecaster(self.freq, self.horizon, noise_bounds, k=0))
 
         truth = {'q': np.array([0.010906, 0.0, 0.021812]), 'p': np.array([0.030172, 0.021552, 0.038793])}
         fcst = dp.observe(self.test_time)
 
-        for var in fcst.keys():
+        for var in fcst.keys():  
+            # this is only guaranteed to work for k=0, it might fail otherwise
             assert (all(fcst[var] - truth[var] >= truth[var] * noise_bounds[0]) and
                     all(fcst[var] - truth[var] <= truth[var] * noise_bounds[1]))
 
         bounds = dp.observation_bounds(self.test_time)
-        assert bounds
+        for var in bounds.keys():
+            assert (all([x[0] for x in bounds[var]] <= truth[var]) and all([x[1] for x in bounds[var]] >= truth[var]))
         
     def test_ConstantDataSource(self):
         dp = DataProvider(self.ds2, PerfectKnowledgeForecaster(self.freq, self.horizon))

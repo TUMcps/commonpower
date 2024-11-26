@@ -5,25 +5,24 @@ from __future__ import annotations
 
 import json
 import logging
-import random
-import re
 from collections import OrderedDict
-from copy import copy, deepcopy
-from datetime import datetime
 from enum import IntEnum
-from typing import Dict, List, Type, Union
+from typing import TYPE_CHECKING, Dict, Union
 
 import gymnasium as gym
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import pyomo.environ as pyo
 from prettytable import PrettyTable
 from pyomo.core import Block, ConcreteModel, Constraint, Expression, Objective, Param, Set, Var
 
-from commonpower.utils import model_root, rgetattr, rhasattr, rsetattr
+from commonpower.data_forecasting.base import DataProvider
+from commonpower.modeling.param_initialization import ParamInitializer
+from commonpower.modeling.util import get_element_from_model
+from commonpower.utils import rgetattr, rsetattr
 from commonpower.utils.cp_exceptions import EntityError
-from commonpower.utils.param_initialization import ParamInitializer
+
+if TYPE_CHECKING:
+    pass
 
 
 class ElementTypes(IntEnum):
@@ -47,11 +46,14 @@ class ElementTypes(IntEnum):
     #: Constraint. Input coupling and dynamics functions are defined with this type.
     #: Maps to the Pyomo type Constraint.
     CONSTRAINT = 6
+    #: Robust constraint. This is a special type of constraint that is evaluated by the RobustConstraintBuilder.
+    #: Is expanded to (usually) multiple instances of the Pyomo type Constraint.
+    ROBUST_CONSTRAINT = 7
     #: Cost variable. This is essentially a generic variable but explicitly defined to simplify
     #: downstream analysis. Maps to the Pyomo type Var.
-    COST = 7
+    COST = 8
     #: Set. Sets can be useful to specify the values a discrete variable can take. Maps to the Pyomo type Set.
-    SET = 8
+    SET = 9
 
 
 class ModelElement:
@@ -65,6 +67,7 @@ class ModelElement:
         expr: Union[None, callable] = None,
         initialize: Union[None, any] = None,
         indexed: Union[None, bool] = None,
+        uncertainty_bounds: Union[None, tuple[float]] = None,
     ) -> ModelElement:
         """
         The ModelElement class builds the bridge between the CommonPower object space
@@ -87,6 +90,8 @@ class ModelElement:
                 If not provided, all elements except CONSTANT/SET are indexed.
                 Currently the indexing of Constraints and non-indexing of Sets are enforced.
                 TODO: Fully implement indexing flexibility.
+            uncertainty_bounds (Union[None, tuple[float]], optional): Interval bounds for the uncertainty set.
+                Only relevant for ElementTypes.CONSTANT. Defaults to None.
 
         Raises:
             AttributeError: If the given type is unknown or if required arguments are not provided.
@@ -99,6 +104,7 @@ class ModelElement:
         self.bounds = bounds
         self.initialize = initialize
         self.indexed = indexed if indexed is not None else True
+        self.uncertainty_bounds = tuple(uncertainty_bounds) if uncertainty_bounds is not None else None
 
         # autogenerate bounds for Binary domain (this way we do not try to look for bounds in the config dict)
         if domain == pyo.Binary:
@@ -123,7 +129,7 @@ class ModelElement:
             self.indexed = indexed if indexed is not None else False
             if not initialize:
                 raise AttributeError("No init for set specified")
-        elif self.type == ElementTypes.CONSTRAINT:
+        elif self.type in [ElementTypes.CONSTRAINT, ElementTypes.ROBUST_CONSTRAINT]:
             self.pyomo_class = Constraint
             if not expr:
                 raise AttributeError("No expr for constraint specified")
@@ -234,427 +240,6 @@ class ModelElement:
         rsetattr(model, name, pyomo_el)
 
 
-class ModelHistory:
-    def __init__(self, model_entities: list[ModelEntity], retention: int = -1) -> ModelHistory:
-        """
-        This class provides a lightweight interface to log "snapshots" of a pyomo model and
-        some methods to retrieve this information.
-        The logs are stored in self.history in the form:
-            [(<time stamp>, {<global model element id>: <value>, ...}), ...].
-
-        Args:
-            model_entities (list[ModelEntity]): Model entities to create a history for.
-                Note that all Vars/Params of the entity and all its subordinate entities will be included.
-                Technically, we are including everything within the pyomo blocks that correspond to the given entities.
-            retention (int, optional): How many logs are kept before deleting from the top (essentially a ring buffer).
-                When set to -1, all logs will be kept. Defaults to -1.
-        """
-        self.model_entities = copy(model_entities)
-        self.retention = retention
-
-        self.history = []
-
-    def log(self, model: ConcreteModel, timestamp: Union[datetime, str, int]) -> None:
-        """
-        Creates a "snapshot" of the values of all model elements corresponding to the given entities and
-        stores them together with the given timestamp.
-        If self.history is already "full" (specified by self.retention), the first entry of self.history is deleted.
-
-        Args:
-            model (ConcreteModel): Model to extract the values from.
-            timestamp (Union[datetime, str, int]): Timestamp information.
-                Can technically be of any type but should be unique to avoid downstream issues.
-        """
-        snapshot = {}
-
-        for ent in self.model_entities:
-            local_model = ent.get_self_as_pyomo_block(model)
-            for el in local_model.component_objects([Var, Param], active=True):
-                snapshot[el.name] = ent.get_value(local_model, el.name)
-
-        if self.retention > 0 and len(self.history) >= self.retention:
-            self.history.pop(0)
-
-        self.history.append((timestamp, deepcopy(snapshot)))
-
-    def reset(self) -> None:
-        """
-        Clears self.history.
-        """
-        self.history = []
-
-    def filter_for_entities(
-        self, entities: Union[ModelEntity, List[ModelEntity]], follow_node_tree: bool = False
-    ) -> ModelHistory:
-        """
-        Filters the history to only contain data from the given entity instances.
-
-        Args:
-            entities (Union[ModelEntity, List[ModelEntity]]): Entites to filter for.
-            follow_node_tree (bool, optional): If True, all entites which are subordinate
-                to the given entites will be included. Defaults to False.
-
-        Returns:
-            ModelHistory: Filtered model history.
-        """
-        if not isinstance(entities, list):
-            entities = [entities]
-
-        if follow_node_tree is True:
-            entities = self._get_entity_tree(entities)
-
-        filtered_history = self._filter_history_for_entities(entities)
-
-        new_history = self.__class__(entities)
-        new_history.history = filtered_history
-
-        return new_history
-
-    def filter_for_entity_types(self, entity_types: Union[Type[ModelEntity], List[Type[ModelEntity]]]) -> ModelHistory:
-        """
-        Filters the history to only contain entities of the given types.
-
-        Args:
-            entity_types (Union[Type[ModelEntity], List[Type[ModelEntity]]]): Entity types to filter for.
-
-        Returns:
-            ModelHistory: Filtered model history.
-        """
-        if not isinstance(entity_types, list):
-            entity_types = [entity_types]
-
-        entities = self._get_entity_tree()
-
-        filtered_entities = [e for e in entities if any([isinstance(e, t) for t in entity_types])]
-
-        filtered_history = self._filter_history_for_entities(filtered_entities)
-
-        new_history = self.__class__(filtered_entities)
-        new_history.history = filtered_history
-
-        return new_history
-
-    def filter_for_element_names(self, names: Union[str, List[str]]) -> ModelHistory:
-        """
-        Filters the history to only contain model elements of the given local names.
-
-        Args:
-            names (Union[str, List[str]]): Local names to filter for.
-
-        Returns:
-            ModelHistory: Filtered model history.
-        """
-        if not isinstance(names, list):
-            names = [names]
-
-        entities = self._get_entity_tree()
-
-        filtered_history = []
-        for t in self.history:
-            filtered_history.append(
-                (
-                    t[0],
-                    {
-                        key: val
-                        for key, val in t[1].items()
-                        if any([e.get_pyomo_element_id(name) == key for e in entities for name in names])
-                    },
-                )
-            )
-
-        new_history = self.__class__(self.model_entities)
-        new_history.history = filtered_history
-
-        return new_history
-
-    def filter_for_time_index(self, t_index: int = 0) -> ModelHistory:
-        """
-        Filters all element histories for a certain time index.
-
-        Args:
-            t_index (int, optional): Time index. A time index of 0 represents the realized values at each timestep.
-                Defaults to 0.
-
-        Returns:
-            ModelHistory: Filtered model history.
-        """
-        filtered_history = []
-        for t in self.history:
-            filtered_history.append(
-                (t[0], {key: val[t_index] if isinstance(val, np.ndarray) else val for key, val in t[1].items()})
-            )
-
-        new_history = self.__class__(self.model_entities)
-        new_history.history = filtered_history
-
-        return new_history
-
-    def filter_for_time_period(self, start: Union[str, pd.Timestamp], end: Union[str, pd.Timestamp]) -> ModelHistory:
-        """
-        Filters all element histories for a given time period
-
-        Args:
-            start (Union[str, pd.Timestamp]): beginning of the time period.
-            If str, should be in format "2016-09-04 00:00:00".
-            end (Union[str, pd.Timestamp]): end of the time period. If str, should be in format "2016-09-04 00:00:00".
-
-        Returns:
-            (ModelHistory): the filtered history.
-
-        """
-        filtered_history = []
-        if isinstance(start, str):
-            start = pd.Timestamp(start)
-        if isinstance(end, str):
-            end = pd.Timestamp(end)
-        time_stamps = [t[0] for t in self.history]
-        start_index = [i for i in range(len(time_stamps)) if time_stamps[i] == start]
-        end_index = [i for i in range(len(time_stamps)) if time_stamps[i] == end]
-        for t in range(end_index[0] - start_index[0] + 1):
-            filtered_history.append(self.history[start_index[0] + t])
-
-        new_history = self.__class__(self.model_entities)
-        new_history.history = filtered_history
-
-        return new_history
-
-    def plot(
-        self,
-        histories: Union[ModelHistory, List[ModelHistory]] = [],
-        timestamp_format: str = "%Y-%m-%d %H:%M",
-        return_time_series=False,
-        show: bool = True,
-        x_label_interval=1,
-        plot_styles: Dict[str, dict] = {},
-        **plt_show_kwargs,
-    ) -> Union[None, dict]:
-        """
-        Plots entire history and, if given, even multiple histories.
-        We assume here that all elements have been consistently logged within the histories.
-
-        Args:
-            histories (Union[ModelHistory, List[ModelHistory]], optional): Additional histories to plot.
-                Defaults to [].
-            timestamp_format (str, optional): Format to display the timestamp in. Defaults to "%Y-%m-%d %H:%M".
-            return_time_series (bool, optional): If true, returns the time series of realized element values.
-                Defaults to False.
-            show (bool, optional): Determines if the plot is shown. Defaults to True.
-            x_label_interval (int, optional): Only print labels on the x-axis every n timesteps (to reduce clutter)
-            plot_styles (dict[str, dict], optional): Dictionary of regular expressions to `pyplot.plot` kwargs.
-                For every element that is plotted, the id is matched (re.search) against all keys of this dict.
-                The kwargs of the first match are used for the call to plot.
-                Additionally, a `drawstyle` of `stairs` is supported, which calls `pyplot.stairs` instead of `plot`.
-                (VAR, CONSTANT, DATA and INPUT default to `stairs`)
-                Example:
-                ```
-                history.plot(plot_styles={
-                    'soc': {  # color all elements that have "soc" in their id green
-                        'color': 'green',
-                    },
-                    'p$': {  # draw all elements that end in "...p" as dotted lines
-                        'linestyle': ':',
-                        'alpha': 0.5,
-                    },
-                    '': {  # fallback: draw all remaining as lines even if they would default to "stairs"
-                        'drawstyle': 'default',
-                    },
-                })
-                ```
-        """
-
-        time_series = {}
-
-        if not isinstance(histories, list):
-            histories = [histories]
-
-        legend_labels = []
-        for idx, hist in enumerate([self] + histories):
-            for element_id in hist.history[0][1].keys():
-                label = f"Hist {idx}: {element_id}" if len(histories) > 1 else element_id
-                legend_labels.append(label)
-                vals = [
-                    t[1][element_id][0] if isinstance(t[1][element_id], np.ndarray) else t[1][element_id]
-                    for t in hist.history
-                ]  # only realized values
-                time_series[label] = vals
-
-                plot_args = {}
-                for pat, style in plot_styles.items():
-                    if re.search(pat, element_id):
-                        plot_args = style
-                        break
-
-                m_type = self._get_model_element_type(element_id)
-                default_style = (
-                    'stairs'
-                    if m_type in [ElementTypes.VAR, ElementTypes.CONSTANT, ElementTypes.DATA, ElementTypes.INPUT]
-                    else ''
-                )
-
-                if plot_args.get('drawstyle', default_style) == 'stairs':
-                    plot_args.pop('drawstyle', None)
-                    plt.stairs(vals, range(len(vals) + 1), baseline=None, **plot_args)
-                else:
-                    plt.plot(range(len(vals)), vals, **plot_args)
-
-        x_labels_full = [x[0].strftime(timestamp_format) if isinstance(x[0], datetime) else x[0] for x in self.history]
-        x_labels = [''] * len(self.history)
-        x_labels[::x_label_interval] = x_labels_full[::x_label_interval]
-        plt.xticks(
-            ticks=range(len(self.history)),
-            labels=x_labels,
-        )
-        plt.xticks(rotation=90, ha="center")
-        plt.xlabel("Timestamp")
-        plt.ylabel("Value")
-        plt.legend(legend_labels)
-        plt.title("Element Realization")
-        plt.tight_layout()
-
-        if show is True:
-            plt.show(**plt_show_kwargs)
-
-        if return_time_series is True:
-            return time_series
-
-    def _get_entity_tree(self, entities: list[ModelEntity] = None) -> list[ModelEntity]:
-        entities = copy(self.model_entities) if entities is None else copy(entities)
-        tmp = []
-        for ent in entities:
-            tmp += ent.get_children()
-        entities += tmp
-
-        return entities
-
-    def _get_model_element_type(self, id: str) -> ElementTypes | None:
-        entities = self._get_entity_tree()
-
-        el_name = id.split(".")[-1]
-
-        for e in entities:
-            if e.get_pyomo_element_id(el_name) == id:
-                me: ModelElement
-                for me in e.model_elements:
-                    if me.name == el_name:
-                        return me.type
-
-        return None
-
-    def _filter_history_for_entities(self, entities: list[ModelEntity]) -> list[tuple]:
-        filtered_history = []
-        for t in self.history:
-            filtered_history.append(
-                (
-                    t[0],
-                    {
-                        key: val
-                        for key, val in t[1].items()
-                        if any([e.get_pyomo_element_id(key.split(".")[-1]) == key for e in entities])
-                    },
-                )
-            )
-        return filtered_history
-
-    def __repr__(self) -> str:
-        """
-        Returns self.history as string.
-
-        Returns:
-            str: str(self.history)
-        """
-        return str(self.history)
-
-    def get_history_for_element(
-        self, entity: ModelEntity, name: str, only_realized_values=True
-    ) -> list[tuple[str, Union[int, float, np.ndarray]]]:
-        """
-        DEPRECIATED! Use .filter_for_entities() and .filter_for_element_names() instead. \\
-        Interface to extract the history of a single model element.
-
-        Args:
-            entity (ModelEntity): Entity the element is associated with.
-            name (str): Local name of the element. This is a utility since the elements are stored
-                in the history with their global id.
-            only_realized_values (bool, optional): Every log of an indexed element is a np.ndarray.
-                If this argument is set to True, only the first element of this array is retrieved for every log.
-                The intuition is that in an MPC-type setup, only the value at time index 0 is
-                actually realized (the rest only "predicted"). Defaults to True.
-
-        Returns:
-            list[tuple[str, Union[int, float, np.ndarray]]]:
-                Element history in the form: [(<time stamp>, <values(s)>, ...].
-        """
-        history = []
-        element_id = entity.get_pyomo_element_id(name)
-        for t in self.history:
-            val = (
-                t[1][element_id][0]
-                if isinstance(t[1][element_id], np.ndarray) and only_realized_values is True
-                else t[1][element_id]
-            )
-            history.append((t[0], val))
-
-        return history
-
-    def plot_realization(
-        self,
-        entities: Union[ModelEntity, List[ModelEntity]],
-        names: Union[str, List[str]],
-        follow_node_tree: bool = False,
-        **plt_show_kwargs,
-    ) -> None:
-        """
-        DEPRECIATED! Use .plot() instead. \\
-        Lightweight interface to plot the realized history of a single or multiple model element(s).
-        The output is a pyplot line plot.
-
-        Args:
-            entities (ModelEntity): Entities the elements are associated with.
-            names (str): Local names of the elements. This is a utility since the elements are
-                stored in the history with their global id.
-            follow_node_tree (bool): If True, every matching model element in the node tree below
-                the given entities is plotted. Defaults to False.
-        """
-
-        if isinstance(names, str):
-            entities = [entities]
-            names = [names]
-
-        if follow_node_tree is True:
-            # fetch all nodes in the node tree
-            tmp = []
-            for ent in entities:
-                tmp += ent.get_children()
-            entities += tmp
-            # expand name list (we only use the first name provided and ignore anything else)
-            names = np.repeat(names[0], len(entities))
-
-        valid_entitites = []
-        for i in range(len(entities)):
-            try:
-                vals = self.get_history_for_element(entities[i], names[i])
-                valid_entitites.append(entities[i])
-                plt.plot(range(len(vals)), [x[1] for x in vals])
-            except KeyError:
-                # this entity does not have an element of that name
-                pass
-
-        plt.xticks(ticks=range(len(vals)), labels=[x[0] for x in vals])
-        plt.xticks(rotation=45)
-        plt.xlabel("Timestamp")
-        plt.ylabel("Value")
-        plt.legend(
-            [
-                f"{valid_entitites[i].get_pyomo_element_id(names[i])} ({valid_entitites[i].name})"
-                for i in range(len(valid_entitites))
-            ]
-        )
-        # plt.title(f"{entity.get_pyomo_element_id(name)} ({entity.name})")
-        plt.title("Element Realization")
-        plt.tight_layout()
-        plt.show(**plt_show_kwargs)
-
-
 class ModelEntity:
     @classmethod
     def info(cls) -> None:
@@ -674,10 +259,13 @@ class ModelEntity:
         for el in model_elements:
             req_config = ""
             req_dp = ""
-            if (
-                el.type == ElementTypes.CONSTANT and el.initialize is None
-            ):  # "constants" can be defined either by a constant float or a ParamInitializer which is called on reset()
-                req_config = "constant or ParamInitializer"
+            if el.type == ElementTypes.CONSTANT and el.initialize is None:
+                # "constants" can be defined either by a constant float or a ParamInitializer which is called on reset()
+                # except for state_inits, which require a ParamInitializer
+                if "_init" in el.name:
+                    req_config = "ParamInitializer"
+                else:
+                    req_config = "constant or ParamInitializer"
             elif el.type in [ElementTypes.INPUT, ElementTypes.VAR, ElementTypes.STATE]:
                 if not el.bounds:
                     req_config = "(lb, ub)"
@@ -746,7 +334,10 @@ class ModelEntity:
         self.name = name
         self.id = ""
 
-        self.model_elements = []
+        self.model_elements: list[ModelElement] = []
+        self.data_providers: list[DataProvider] = []
+        self.data_provider_map: dict[str, DataProvider] = {}  # maps elements to their data provider
+
         self.config = config
 
     def add_to_model(self, model: ConcreteModel, **kwargs) -> None:
@@ -771,12 +362,27 @@ class ModelEntity:
         rsetattr(self.model, self.id, ConcreteModel())
 
         self.model_elements = self._augment_model_elements(self._get_model_elements())
+
         self.model_elements = self._add_constraints(self.model_elements)
 
         self._check_config(self.config)
 
         for el in self.model_elements:
             self._add_model_element(el)
+
+    def add_data_provider(self, data_provider: DataProvider) -> ModelEntity:
+        """
+        Adds a data provider to the entity.
+        It will be checked during validation if all model elements which require a data provider are covered.
+
+        Args:
+            data_provider (DataProvider): Data provider instance.
+
+        Returns:
+            Component: Component instance.
+        """
+        self.data_providers.append(data_provider)
+        return self
 
     def get_pyomo_element(self, name: str, model: ConcreteModel) -> Union[Var, Param, Set, Constraint, Objective]:
         """
@@ -801,7 +407,6 @@ class ModelEntity:
             Union[Var, Param, Set, Constraint, Objective]: The referenced variable from the given model.
         """
 
-        root_model = model_root(model)  # get root model
         local_id = name.split(".")[-1] if self.id else name  # get local element id (do nothing if self is system)
         global_id = self.get_pyomo_element_id(local_id)  # get gobal element id
 
@@ -810,29 +415,12 @@ class ModelEntity:
         if name not in global_id:
             raise EntityError(self, f"The variable {name} is not on the model branch of the calling entity")
 
-        # Try global access (works if root_model == global model)
-        if rhasattr(root_model, global_id):
-            return rgetattr(root_model, global_id)
+        elem = get_element_from_model(name, model, local_id, global_id)
 
-        # Try local access if a local element was passed and the passed model is its own root model.
-        # This would only happen for the system block or "cut-off" sub-global blocks (e.g. as accessed by controller)
-        # that want to access a top-level element
-        if model == root_model and local_id == name and rhasattr(model, local_id):
-            return rgetattr(model, local_id)
+        if elem is None:
+            raise EntityError(self, f"The variable {global_id} could not be found in the given model")
 
-        # Usually, the passed model has a root model higher up the hierarchy.
-        # If global access did not work, this root is not the global model
-        # (e.g. if the root is a sub-global block from a controller).
-        # This is why we iterate though the global element id top-down until we find the right element.
-        # We already know that local access did not work, so we will not try the local id.
-        # This prevents finding the wrong element if it exists on a higher level.
-        # E.g. "n0.n01.e1.p" -> "n01.e1.p" -> "e1.p" !-> "p"
-        for level in range(len(global_id.split(".")) - 1):
-            name_for_level = ".".join(global_id.split(".")[level:])
-            if rhasattr(root_model, name_for_level):
-                return rgetattr(root_model, name_for_level)
-
-        raise EntityError(self, f"The variable {global_id} could not be found in the given model")
+        return elem
 
     def has_pyomo_element(self, name: str, model: ConcreteModel) -> bool:
         """
@@ -1019,6 +607,52 @@ class ModelEntity:
             raise EntityError(
                 self, f"The following constants have not been specified (correctly): {str(missing_elements)}"
             )
+
+        # check if all states have corresponding initializer instances in the config
+        states = [el for el in self.model_elements if el.type == ElementTypes.STATE]
+        for s in states:
+            if not isinstance(self.config[f"{s.name}_init"], ParamInitializer):
+                raise EntityError(
+                    self,
+                    f"The initializer of state init parameter {s.name}_init must be of type"
+                    f" {ParamInitializer.__name__}",
+                )
+
+        # check if all required dataproviders are attached
+        needed_from_dataprovider = [el.name for el in self.model_elements if el.type == ElementTypes.DATA]
+        if needed_from_dataprovider:
+            if not self.data_providers:
+                raise EntityError(self, f"Data Providers for {needed_from_dataprovider} required.")
+            sourced_params = np.concatenate([s.get_variables() for s in self.data_providers], axis=None)
+            if not all(x in sourced_params for x in needed_from_dataprovider):
+                raise EntityError(self, f"Data Providers for {needed_from_dataprovider} required.")
+            if len(set(sourced_params)) < len(sourced_params):
+                raise EntityError(
+                    self, f"Some variables are provided by more than one Data Provider: {sourced_params}."
+                )
+
+            # check if data sources/providers have appropriate limits
+            limits_dict_el = {el.name: el.bounds for el in self.model_elements if el.type == ElementTypes.DATA}
+            limits_dict_data = {
+                k: v
+                for limits_dict in [dp.data.get_limits() for dp in self.data_providers]
+                for k, v in limits_dict.items()
+            }
+            for el, bounds in limits_dict_el.items():
+                bounds = bounds or (-1e12, 1e12)  # el bound might be None
+                if (
+                    limits_dict_data[el][0] < bounds[0]
+                    or limits_dict_data[el][1] > bounds[1]  # lower bound  # upper bound
+                ):
+                    raise EntityError(
+                        self,
+                        f"Data provider for {el} does not adhere to the required limits. "
+                        f"Modeled limits: {bounds}, Data limits: {limits_dict_data[el]}",
+                    )
+
+        self.data_provider_map = {}
+        for dp in self.data_providers:
+            self.data_provider_map.update({el: dp for el in dp.get_variables()})
 
     def _add_model_element(self, element: ModelElement) -> None:
         """
@@ -1276,356 +910,3 @@ class ControllableModelEntity(ModelEntity):
             else:
                 input_ids.append(self.get_pyomo_element_id(el.name))
         return input_ids
-
-
-class MIPExpressionBuilder:
-    def __init__(self, entity: ModelEntity, M: int = 1e3, eps: float = 1e-5):
-        """
-        The expression builder allows to convert logical expression into mixed integer constraints.
-        In the process it also creates all necessary auxiliary variables.
-        The structure of of interface is as follows:
-            - Create expression builder instance.
-            - Generate expressions. Constraints and an output variable are created
-              (or an existing output variable referenced) for each expression.
-              The corresponding ModelElements are internally stored in self.model_elements.
-            - Obtain all generated ModelElements from self.model_elements.
-
-        The MIP conversions here are based on
-
-        @article{brown2007formulating,
-            title={Formulating integer linear programs: A rogues' gallery},
-            author={Brown, Gerald G and Dell, Robert F},
-            journal={INFORMS Transactions on Education},
-            volume={7},
-            number={2},
-            pages={153--159},
-            year={2007},
-            publisher={INFORMS}
-        }
-
-        IMPORTANT NOTE: The Integrality Tolerance of the used solver has to be set such that
-        IntFeasTol * M < eps for all the constraints to work correctly.
-
-        Args:
-            entity (ModelEntity): Entity used to obtain referenced pyomo model elements from.
-            M (int, optional): Constant for bigM constraints. Defaults to 1e3.
-            eps (float, optional): Slack value for strict inequalities (pyomo only allows for <=, >=, ==).
-                Defaults to 1e-5.
-        """
-        self.vars = []
-        self.model_elements = []
-        self.entity = entity
-        self.M = M
-        self.eps = eps  # this is a slack value because pyomo only allows for <=, >=, ==
-
-    def from_geq(
-        self, a: Union[str, int, float], b: Union[str, int, float], out: str = None, is_new: bool = True, M: int = None
-    ) -> str:
-        """
-        Generates constraints based on: \\
-        out = 1 if a >= b, out = 0 otherwise.
-        The MILP formulation using bigM constraints is: \\
-        a >= b - M*(1-out) \\
-        a < b + M*out (we use: a + eps <= b + M*out)
-
-        Args:
-            a (Union[str, int, float]): Left hand side of the inequality.
-            b (Union[str, int, float]): Right hand side of the inequality.
-            out (str, optional): Name of the output variable.
-                If not given, a name is autogenerated ('aux_' + 5 hex characters).
-            is_new (bool, optional): Indicates if the variable is new. If so, a corresponding ModelElement added.
-                Defaults to True.
-            M (int, optional): Constant M for bigM type constraints. If not given, the class' M is used.
-
-        Returns:
-            str: Name of the output variable
-        """
-
-        if not out:
-            is_new = True  # just in case someone tried to be nasty...
-            out = "aux_" + "%05x" % random.randrange(16**5)  # 5 hex characters
-
-        if is_new:
-            self.model_elements.append(
-                ModelElement(out, ElementTypes.VAR, "auxiliary binary variable", domain=pyo.Binary)
-            )
-
-        if not M:
-            M = self.M
-
-        def cbin1_f(model, t):
-            return self._parse_var(a, model, t) >= self._parse_var(b, model, t) - M * (
-                1 - self._parse_var(out, model, t)
-            )
-
-        def cbin2_f(model, t):
-            return self._parse_var(a, model, t) + self.eps <= self._parse_var(b, model, t) + M * self._parse_var(
-                out, model, t
-            )
-
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_1", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin1_f
-            )
-        )
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_2", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin2_f
-            )
-        )
-
-        return out
-
-    def from_gt(
-        self, a: Union[str, int, float], b: Union[str, int, float], out: str = None, is_new: bool = True, M: int = None
-    ) -> str:
-        """
-        Generates constraints based on: \\
-        out = 1 if a > b, out = 0 otherwise.
-        The MILP formulation using bigM constraints is: \\
-        a - eps >= b - M*(1-out) \\
-        a <= b + M*out
-
-        Args:
-            a (Union[str, int, float]): Left hand side of the inequality.
-            b (Union[str, int, float]): Right hand side of the inequality.
-            out (str, optional): Name of the output variable.
-                If not given, a name is autogenerated.
-            is_new (bool, optional): Indicates if the variable is new. If so, a corresponding ModelElement added.
-                Defaults to True.
-            M (int, optional): Constant M for bigM type constraints. If not given, the class' M is used.
-
-        Returns:
-            str: Name of the output variable
-        """
-
-        if not out:
-            is_new = True  # just in case...
-            out = "aux_" + "%05x" % random.randrange(16**5)
-
-        if is_new:
-            self.model_elements.append(
-                ModelElement(out, ElementTypes.VAR, "auxiliary binary variable", domain=pyo.Binary)
-            )
-
-        if not M:
-            M = self.M
-
-        def cbin1_f(model, t):
-            return self._parse_var(a, model, t) - self.eps >= self._parse_var(b, model, t) - M * (
-                1 - self._parse_var(out, model, t)
-            )
-
-        def cbin2_f(model, t):
-            return self._parse_var(a, model, t) <= self._parse_var(b, model, t) + M * self._parse_var(out, model, t)
-
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_1", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin1_f
-            )
-        )
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_2", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin2_f
-            )
-        )
-
-        return out
-
-    def from_and(self, a: str, b: str, out: str = None, is_new: bool = True) -> str:
-        """
-        Generates constraints based on: \\
-        out = 1 if (a and b), out = 0 otherwise.
-        The MILP formulation is: \\
-        out >= a + b - 1 \\
-        out <= a \\
-        out <= b
-
-        Args:
-            a (str): Variable 1 (must be binary).
-            b (str): Variable 2 (must be binary).
-            out (str, optional): Name of the output variable.
-                If not given, a name is autogenerated.
-            is_new (bool, optional): Indicates if the variable is new. If so, a corresponding ModelElement added.
-                Defaults to True.
-            If not given, a name is autogenerated and a corresponding ModelElement added.
-
-        Returns:
-            str: Name of the output variable.
-        """
-
-        if not out:
-            is_new = True  # just in case...
-            out = "aux_" + "%05x" % random.randrange(16**5)
-
-        if is_new:
-            self.model_elements.append(
-                ModelElement(out, ElementTypes.VAR, "auxiliary binary variable", domain=pyo.Binary)
-            )
-
-        def cbin1_f(model, t):
-            return self._parse_var(out, model, t) >= self._parse_var(a, model, t) + self._parse_var(b, model, t) - 1
-
-        def cbin2_f(model, t):
-            return self._parse_var(out, model, t) <= self._parse_var(a, model, t)
-
-        def cbin3_f(model, t):
-            return self._parse_var(out, model, t) <= self._parse_var(b, model, t)
-
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_1", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin1_f
-            )
-        )
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_2", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin2_f
-            )
-        )
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_3", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin3_f
-            )
-        )
-
-        return out
-
-    def from_or(self, a: str, b: str, out: str = None, is_new: bool = True) -> str:
-        """
-        Generates constraints based on: \\
-        out = 1 if (a or b), out = 0 otherwise.
-        The MILP formulation is: \\
-        out <= a + b \\
-        out >= a \\
-        out >= b
-
-        Args:
-            a (str): Variable 1 (must be binary).
-            b (str): Variable 2 (must be binary).
-            out (str, optional): Name of the output variable.
-                If not given, a name is autogenerated.
-            is_new (bool, optional): Indicates if the variable is new. If so, a corresponding ModelElement added.
-                Defaults to True.
-            If not given, a name is autogenerated and a corresponding ModelElement added.
-
-        Returns:
-            str: Name of the output variable.
-        """
-
-        if not out:
-            is_new = True  # just in case...
-            out = "aux_" + "%05x" % random.randrange(16**5)
-
-        if is_new:
-            self.model_elements.append(
-                ModelElement(out, ElementTypes.VAR, "auxiliary binary variable", domain=pyo.Binary)
-            )
-
-        def cbin1_f(model, t):
-            return self._parse_var(out, model, t) <= self._parse_var(a, model, t) + self._parse_var(b, model, t)
-
-        def cbin2_f(model, t):
-            return self._parse_var(out, model, t) >= self._parse_var(a, model, t)
-
-        def cbin3_f(model, t):
-            return self._parse_var(out, model, t) >= self._parse_var(b, model, t)
-
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_1", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin1_f
-            )
-        )
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_2", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin2_f
-            )
-        )
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_3", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin3_f
-            )
-        )
-
-        return out
-
-    def from_not(self, a: str, out: str = None, is_new: bool = True) -> str:
-        """
-        Generates a constraint based on: \\
-        out = 1 - a
-        The MILP formulation is: \\
-        out == 1 - a
-
-        Args:
-            a (str): Variable 1 (must be binary)
-            out (str, optional): Name of the output variable.
-                If not given, a name is autogenerated.
-            is_new (bool, optional): Indicates if the variable is new.
-                If so, a corresponding ModelElement added. Defaults to True.
-            If not given, a name is autogenerated and a corresponding ModelElement added.
-
-        Returns:
-            str: Name of the output variable.
-        """
-
-        if not out:
-            is_new = True  # just in case...
-            out = "aux_" + "%05x" % random.randrange(16**5)
-
-        if is_new:
-            self.model_elements.append(
-                ModelElement(out, ElementTypes.VAR, "auxiliary binary variable", domain=pyo.Binary)
-            )
-
-        def cbin1_f(model, t):
-            return self._parse_var(out, model, t) == 1 - self._parse_var(a, model, t)
-
-        self.model_elements.append(
-            ModelElement(
-                f"cmilp_{out}_1", ElementTypes.CONSTRAINT, f"constrain auxiliary binary variable {out}", expr=cbin1_f
-            )
-        )
-
-        return out
-
-    def enforce_value(self, a: str, val: Union[int, float]) -> None:
-        """
-        Generates an always-true constraint for a: \\
-        val == a
-
-        Args:
-            a (str): Variable 1.
-            val (Union[int, float]): value the variable should be set to.
-        """
-
-        def cbin1_f(model, t):
-            return self._parse_var(a, model, t) == val
-
-        self.model_elements.append(
-            ModelElement(f"cenf_{a}", ElementTypes.CONSTRAINT, f"constrain binary variable {a} to {val}", expr=cbin1_f)
-        )
-
-    def _parse_var(
-        self, var: Union[str, int, float, list[int], list[float]], model: ConcreteModel, t: int
-    ) -> Union[Union[Var, Param], int, float]:
-        """
-        Helper method to access elements from self.entity's pyomo model.
-
-        Args:
-            var (Union[str, int, float, list[int], list[float]]): Either variable name or constant value.
-            model (ConcreteModel): Pyomo model to access.
-            t (int): Time index.
-
-        Returns:
-            Union[Union[Var, Param], int, float]: Either pyomo element or constant value.
-        """
-        if isinstance(var, str):
-            el = self.entity.get_pyomo_element(var, model)
-            if el.is_indexed():
-                return el[t]
-            else:
-                return el
-        else:
-            if isinstance(var, (list, tuple)):
-                return var[t]
-            else:
-                return var
