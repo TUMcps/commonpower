@@ -24,6 +24,7 @@ from commonpower.modeling.base import ControllableModelEntity, ElementTypes, Mod
 from commonpower.modeling.history import ModelHistory
 from commonpower.modeling.param_initialization import ParamInitializer
 from commonpower.modeling.robust_constraints import RobustConstraintBuilder
+from commonpower.modeling.robust_cost import BaseRobustCost, CostScenario, NominalCost
 from commonpower.utils import rsetattr
 from commonpower.utils.cp_exceptions import EntityError, InstanceError
 from commonpower.utils.default_solver import get_default_solver
@@ -129,6 +130,8 @@ class System(ControllableModelEntity):
         self.env_func = None
 
         self.solver = None  # solver for optimization problem
+
+        self._cost_builder: BaseRobustCost = None
 
     def add_node(self, node: Node, at_index: Union[None, int] = None) -> System:
         """
@@ -308,10 +311,15 @@ class System(ControllableModelEntity):
         for el in self.model_elements:
             self._add_model_element(el)
 
-        def obj_fcn(model):
-            return quicksum([n.cost_fcn(model, t) for t in range(self.forecast_horizon_int) for n in self.nodes])
-
-        self.model.obj1 = Objective(expr=obj_fcn)
+        # this cost function does not really matter, since all step 0 inputs are computed by controllers
+        # however, using a reasonable cost function makes this more robust against modeling errors,
+        # helps with warmstarting the solver,
+        # and allows for better analysis of predicted behavior at different time steps.
+        self._cost_builder = NominalCost(
+            discount_factor=1.0,
+        )
+        self._cost_builder.initialize(self.cost_fcn, self.forecast_horizon_int)
+        self.model.obj1 = Objective(expr=self._cost_builder.obj_fcn(model))
 
     def get_controllers(self, ctrl_types: list = None) -> dict:
         """
@@ -687,15 +695,17 @@ class System(ControllableModelEntity):
 
         print(output)
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
-        return quicksum([n.cost_fcn(model, t) for n in self.nodes])
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
+        return quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes])
 
     def compute_cost(self) -> None:
         """
         Computes the cost based on the specified cost_fcn and stores the result in the systems' cost parameter.
         """
+        # We compute the cost only for the nominal scenario here
+        # This is because we are only interested in the realized cost, i.e, at index 0.
         for t in range(self.forecast_horizon_int):
-            self.set_value(self.instance, "cost", value(self.cost_fcn(self.instance, t)), idx=t)
+            self.set_value(self.instance, "cost", value(self.cost_fcn(CostScenario(), self.instance, t)), idx=t)
 
         for node in self.nodes:
             node.compute_cost()
@@ -1047,7 +1057,7 @@ class Node(ControllableModelEntity):
         for node in self.nodes:
             node.unmodeled_update()
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         Returns the node's cost as pyomo expression at time t.
 
@@ -1059,7 +1069,7 @@ class Node(ControllableModelEntity):
         """
 
         if self.nodes:
-            return quicksum([n.cost_fcn(model, t) for n in self.nodes])
+            return quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes])
         else:
             return 0.0
 
@@ -1068,7 +1078,7 @@ class Node(ControllableModelEntity):
         Computes the cost based on the specified cost_fcn and stores the result in the node's cost parameter.
         """
         for t in range(self.horizon):
-            self.set_value(self.instance, "cost", value(self.cost_fcn(self.instance, t)), idx=t)
+            self.set_value(self.instance, "cost", value(self.cost_fcn(CostScenario(), self.instance, t)), idx=t)
 
         for node in self.nodes:
             node.compute_cost()

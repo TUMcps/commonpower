@@ -19,6 +19,7 @@ from stable_baselines3.common.utils import set_random_seed
 from commonpower.control.util import clone_from_top_level_nodes, single_step_cost_callback
 from commonpower.core import Node, System
 from commonpower.modeling.base import ControllableModelEntity, ElementTypes
+from commonpower.modeling.robust_cost import BaseRobustCost, NominalCost
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
 from commonpower.utils.default_solver import get_default_solver
 
@@ -29,7 +30,6 @@ class BaseController:
         name: str,
         obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
         global_obs_elements: List[Tuple[Union[Node, list]]] = None,
-        cost_callback: Callable = single_step_cost_callback,
     ):
         """
         This is the base class for any controller type that will be implemented. It manages assignment of controllable
@@ -45,7 +45,6 @@ class BaseController:
             the observation of the controller.
             global_obs_elements (List[Tuple[Union[Node, list]]]): additional model elements (can also be from outside \
             the controlled entities) that should be observed.
-            cost_callback (Callable): function used to compute the stage cost (step cost) of the controller
 
         Returns:
             BaseController
@@ -65,7 +64,7 @@ class BaseController:
 
         self.input_space = None
 
-        self.cost_callback = cost_callback
+        self.cost_callback = single_step_cost_callback
 
     def initialize(self):
         """
@@ -406,10 +405,9 @@ class OptimalController(BaseController):
     def __init__(
         self,
         name: str,
-        cost_callback: Callable = single_step_cost_callback,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
-        objective_fcn: Callable = None,
+        cost_fcn: BaseRobustCost = NominalCost(),
     ):
         """
         Optimal controller that solves a constrained optimization problem to find the control inputs which minimize
@@ -417,36 +415,28 @@ class OptimalController(BaseController):
 
         Args:
             name (str): name of the controller
-            cost_callback (Callable, optional): function used within the cost function of the controller
-                to compute additional cost terms
             solver (OptSolver, optional): solver for optimization problem
             control_input_trajectory_length (int, optional): number of time steps the controller
                 computes control inputs for
-            objective_fcn (Callable, optional): objective function of the controller.
-                The function must have the signature of a Pyomo objective function expression.
-                If None, the default objective function is used (sum of costs over all controlled top level nodes).
+            cost_fcn (BaseRobustCost, optional): Robust cost function. Defaults to NominalCost.
 
         Returns:
             OptimalController
         """
-        super().__init__(name=name, cost_callback=cost_callback)
+        super().__init__(name=name)
         self.ctrl_type = "oc"  # optimal control
         self.sys_inst = None
         self.model = None
         self.solver = solver
+        self._cost_builder = cost_fcn
 
         self.control_input_trajectory_length = control_input_trajectory_length  # only one time step for optimal control
 
-        if not objective_fcn:
+    def get_objective_fcn(self) -> Callable:
+        def _objective_fcn(scenario, model, t):
+            return quicksum([n.cost_fcn(scenario, model, t) for n in self.top_level_nodes])
 
-            def obj_fcn_mpc(model):  # default MPC objective function
-                return quicksum(
-                    [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
-                )
-
-            self.objective_fcn = obj_fcn_mpc
-        else:
-            self.objective_fcn = objective_fcn
+        return _objective_fcn
 
     def reset_history(self) -> None:
         """
@@ -480,7 +470,10 @@ class OptimalController(BaseController):
 
         mdl = clone_from_top_level_nodes(self.top_level_nodes, self.sys_inst)
 
-        mdl.control_obj1 = Objective(expr=self.objective_fcn)
+        self._cost_builder.initialize(self.get_objective_fcn(), len(self.sys_inst.t) - 1)
+        self._cost_builder.add_additional_constraints(mdl)
+
+        mdl.control_obj1 = Objective(expr=self._cost_builder.obj_fcn(mdl))
 
         self.model = mdl
 
@@ -543,7 +536,8 @@ class RLBaseController(BaseController):
             RLBaseController
 
         """
-        super().__init__(name=name, cost_callback=cost_callback)
+        super().__init__(name=name)
+        self.cost_callback = cost_callback
         self.ctrl_type = "rl"  # Reinforcement Learning
         self.device = device
         self.train = train

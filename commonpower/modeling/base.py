@@ -17,6 +17,7 @@ from pyomo.core import Block, ConcreteModel, Constraint, Expression, Objective, 
 
 from commonpower.data_forecasting.base import DataProvider
 from commonpower.modeling.param_initialization import ParamInitializer
+from commonpower.modeling.robust_cost import CostScenario
 from commonpower.modeling.util import get_element_from_model
 from commonpower.utils import rgetattr, rsetattr
 from commonpower.utils.cp_exceptions import EntityError
@@ -557,7 +558,7 @@ class ModelEntity:
     def get_children(self) -> list[ModelEntity]:
         return []
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         Returns the pyomo expression of the entity's cost function.
 
