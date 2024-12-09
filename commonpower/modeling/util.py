@@ -50,3 +50,25 @@ def get_element_from_model(name: str, model: ConcreteModel, local_id: str, globa
         name_for_level = ".".join(global_id.split(".")[level:])
         if rhasattr(root_model, name_for_level):
             return rgetattr(root_model, name_for_level)
+
+
+class SubscriptableFloat(float):
+    """
+    This is a dummy class to "fake" the behaviour of a model element
+    when extracting the signature from a constraint/cost expression.
+    """
+
+    def __getitem__(self, _):
+        """Make the float subscriptable by returning itself for any index"""
+        return self
+
+    def is_indexed(self):
+        return False
+
+    @property
+    def ub(self):
+        return self
+
+    @property
+    def lb(self):
+        return self

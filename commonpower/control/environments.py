@@ -169,6 +169,10 @@ class ControlEnv(gym.Env):
         # and then never again
         super().reset(seed=seed)
 
+        # reset system history
+        if self.system_history:
+            self.system_history.reset()
+
         self.n_steps = 0
         reset_time = self.sys.sample_start_date(self.fixed_start)
         if self.train:

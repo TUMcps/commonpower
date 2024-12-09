@@ -86,10 +86,10 @@ class BaseRunner:
         self.control_horizon = control_horizon
         self.dt = dt
         self.continuous_control = continuous_control
-        # dummy controller to balance system
+        # controller to balance system
         self.global_controller = global_controller.add_system(self.sys)
         # model history for logging
-        self.history = history
+        self.history = history or ModelHistory([sys])
         # seed for global random number generator
         if seed is not None:
             self.seed = seed
