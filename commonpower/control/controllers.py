@@ -16,9 +16,10 @@ from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
+from commonpower.control.observation_handling import ObservationHandler
 from commonpower.control.util import clone_from_top_level_nodes, single_step_cost_callback
-from commonpower.core import Node, System
-from commonpower.modeling.base import ControllableModelEntity, ElementTypes
+from commonpower.core import System
+from commonpower.modeling.base import ControllableModelEntity
 from commonpower.modeling.robust_cost import BaseRobustCost, NominalCost
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
 from commonpower.utils.default_solver import get_default_solver
@@ -28,23 +29,15 @@ class BaseController:
     def __init__(
         self,
         name: str,
-        obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
-        global_obs_elements: List[Tuple[Union[Node, list]]] = None,
     ):
         """
         This is the base class for any controller type that will be implemented. It manages assignment of controllable
         entities to the controller and automatically deduces the action space from the bounds of the elements within
-        these entities. The observation space of the controller is captured within the obs_maks and defaults to all
-        model elements of type STATE or DATA. Additional elements can be passed through global_obs_elements. The most
-        important functionality of the controller is to compute the control input, a function that has to be implemented
-        by the subclasses.
+        these entities. The most important functionality of the controller is to compute the control input, a function
+        that has to be implemented by the subclasses.
 
         Args:
             name (str): name of the controller
-            obs_types (List[ElementTypes]): types of model elements of the controlled entities that are included in \
-            the observation of the controller.
-            global_obs_elements (List[Tuple[Union[Node, list]]]): additional model elements (can also be from outside \
-            the controlled entities) that should be observed.
 
         Returns:
             BaseController
@@ -58,20 +51,19 @@ class BaseController:
 
         self.history = {}
 
-        self.obs_mask = {}
-        self.obs_types = obs_types
-        self.global_obs_elements = global_obs_elements
-
         self.input_space = None
 
         self.cost_callback = single_step_cost_callback
+
+    @property
+    def obs_mask(self):
+        return ({node_id: {} for node_id in self.node_ids}, 1)
 
     def initialize(self):
         """
         Initial set-up of controller.
         """
         self._index_entities()
-        self.set_obs_mask(self.obs_types, self.global_obs_elements)
         self.top_level_nodes = self.get_top_level_nodes()
         self.input_space = self.get_input_space()
 
@@ -309,29 +301,6 @@ class BaseController:
         """
         return self.cost_callback(ctrl=self, sys_inst=sys_inst)
 
-    def set_obs_mask(
-        self,
-        obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
-        glob_obs_elements: List[Tuple[Union[Node, list]]] = None,
-    ) -> dict:
-        """
-        Sets the elements observed by the controller.
-
-        Args:
-            obs_types (List[ElementTypes]): types of model elements that will be included from all entities controlled
-                by this controller.
-            glob_obs_elements List[Tuple[Union[Node, list]]]: additional model elements that have to be included
-                in the observation (may be from outside the scope of the controller).
-
-        Returns:
-            dict: observed model element ids
-
-        """
-        for node in self.nodes:
-            self.obs_mask[node.id] = [el.name for el in node.model_elements if el.type in obs_types]
-        if glob_obs_elements:
-            self.obs_mask["global"] = glob_obs_elements
-
     def get_input_space(self, normalize: bool = False) -> gym.spaces.Dict:
         """
         Derives action space of the controller from the list of its controlled entities.
@@ -509,6 +478,7 @@ class RLBaseController(BaseController):
     def __init__(
         self,
         name: str,
+        obs_handler: ObservationHandler = ObservationHandler(),
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
@@ -525,6 +495,7 @@ class RLBaseController(BaseController):
 
         Args:
             name (str): name of the controller
+            obs_handler (ObservationHandler): entity that takes care of processing observations for RL controllers.
             train (bool): whether the controller is in training mode
             device (str): whether to use 'cpu' or 'cuda' (GPU)
             safety_layer (BaseSafetyLayer): safety layer instance
@@ -547,12 +518,18 @@ class RLBaseController(BaseController):
         self.train_history = {}
         self.deployment_history = []
         self.denormalize_inputs = False
+        self.obs_handler = obs_handler
+
+    @property
+    def obs_mask(self):
+        return self.obs_handler.get_obs_mask()
 
     def initialize(self):
         """
         Initial set-up of controller and safety layer
         """
         super().initialize()
+        self.obs_handler.set_obs_mask(self.get_nodes())
         self.safety_layer.initialize(nodes=self.nodes, top_level_nodes=self.top_level_nodes)
 
     def reset_history(self):
@@ -763,6 +740,7 @@ class RLControllerMA(RLBaseController):
     def __init__(
         self,
         name: str,
+        obs_handler: ObservationHandler,
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
@@ -771,6 +749,7 @@ class RLControllerMA(RLBaseController):
     ):
         super().__init__(
             name=name,
+            obs_handler=obs_handler,
             cost_callback=cost_callback,
             train=train,
             device=device,

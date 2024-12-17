@@ -10,7 +10,7 @@ import re
 from collections import OrderedDict
 from copy import copy
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Tuple, Union
+from typing import Callable, List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -114,11 +114,8 @@ class System(ControllableModelEntity):
 
         self.t = None  # current time
         self.tau = None  # time step
-        self.forecast_horizon = None  # forecast horizon
-        self.forecast_horizon_int = None
-
-        # how long an episode is (the controller could look 24 hours into the future but control for 10 days)
-        self.control_horizon = None
+        self.horizon = None  # control horizon
+        self.horizon_int = None
 
         self.start_time = None  # start of simulation time
         self.continuous_control = None  # whether to consider an infinite control horizon
@@ -165,8 +162,8 @@ class System(ControllableModelEntity):
 
     def initialize(
         self,
-        forecast_horizon: timedelta = timedelta(hours=24),
-        control_horizon: timedelta = timedelta(hours=24),
+        episode_horizon: timedelta = timedelta(hours=0),
+        horizon: timedelta = timedelta(hours=24),
         tau: timedelta = timedelta(hours=1),
         continuous_control: bool = False,
         solver: OptSolver = get_default_solver(),
@@ -179,26 +176,25 @@ class System(ControllableModelEntity):
         if controllers have been defined appropriately.
 
         Args:
-            forecast_horizon (timedelta, optional): Forecast horizon. This specifies the time period for which
+            episode_horizon (timedelta): Specifies how long RL agents simulate the system before resetting.
+                Mainly needed to adjust the date_range of the system.
+            horizon (timedelta, optional): This specifies the time period for which
                 the controllers "look into the future". Defaults to 24h.
-            control_horizon (timedelta, optional): Control horizon. This specifies the time period for which
-                the system will run before terminating (is_done=True) if continuous control is disabled.
-                Defaults to 24h.
             tau (timedelta, optional): Sample time, i.e., the period of time between to control actions.
                 This needs to match the frequency of data providers. Defaults to timedelta(hours=1).
             continuous_control (bool): whether to use an infinite control horizon
             solver (OptSolver, optional): Solver instance for the optimization problem that will be called by Pyomo.
         """
         self.tau = tau
-        self.forecast_horizon = forecast_horizon
-        self.forecast_horizon_int = int(self.forecast_horizon / self.tau)
-        self.control_horizon = control_horizon
+        self.horizon = horizon
+        self.horizon_int = int(self.horizon / self.tau)
+        self.episode_horizon = episode_horizon
         self.continuous_control = continuous_control
         self.solver = solver
 
         # check if all data providers have appropriate forecast horizon and data frequency
         for node in self.nodes:
-            node.validate_data_providers(forecast_horizon, tau)
+            node.validate_data_providers(horizon, tau)
 
         self.add_to_model(ConcreteModel())
 
@@ -239,7 +235,11 @@ class System(ControllableModelEntity):
 
         # reset training history of RL controllers
         for ctrl in self.controllers.values():
+            from commonpower.control.controllers import RLBaseController
+
             ctrl.reset_history()
+            if isinstance(ctrl, RLBaseController):
+                ctrl.obs_handler.reset()
 
     def unmodeled_update(self):
         """
@@ -288,7 +288,7 @@ class System(ControllableModelEntity):
         """
         self.model = model  # store reference to model internally
 
-        self.model.t = Set(initialize=range(0, self.forecast_horizon_int + 1))
+        self.model.t = Set(initialize=range(0, self.horizon_int + 1))
 
         # the tau value in the model is a float indicating tau / 1h, i.e., the fraction/multiple of one hour.
         tau_float = self.tau / timedelta(hours=1)
@@ -298,7 +298,7 @@ class System(ControllableModelEntity):
 
         for idx, node in enumerate(self.nodes):
             node.set_id("", idx)
-            node.add_to_model(model, tau=tau_float, horizon=self.forecast_horizon_int)
+            node.add_to_model(model, tau=tau_float, horizon=self.horizon_int)
 
         for line in self.lines:
             line.add_to_model(model)
@@ -318,7 +318,7 @@ class System(ControllableModelEntity):
         self._cost_builder = NominalCost(
             discount_factor=1.0,
         )
-        self._cost_builder.initialize(self.cost_fcn, self.forecast_horizon_int)
+        self._cost_builder.initialize(self.cost_fcn, self.horizon_int)
         self.model.obj1 = Objective(expr=self._cost_builder.obj_fcn(model))
 
     def get_controllers(self, ctrl_types: list = None) -> dict:
@@ -341,6 +341,7 @@ class System(ControllableModelEntity):
 
     def create_env_func(
         self,
+        episode_length: int = 24,
         wrapper: gym.Wrapper = None,
         fixed_start: datetime = None,
         normalize_actions: bool = True,
@@ -351,6 +352,7 @@ class System(ControllableModelEntity):
         Based on the OpenAI Gym environment API.
 
         Args:
+            episode_length (int): how many environment interaction steps to complete before resetting the environment
             wrapper (gym.Wrapper): any class to wrap around the standard ControlEnv API provided within this repository
             (used for example to map from multi-agent environment to single-agent environment)
             fixed_start (datetime): whether to run on a fixed given day
@@ -369,6 +371,7 @@ class System(ControllableModelEntity):
             env = ControlEnv(
                 system=self,
                 continuous_control=self.continuous_control,
+                episode_length=episode_length,
                 fixed_start=fixed_start,
                 normalize_action_space=normalize_actions,
                 history=history,
@@ -380,55 +383,13 @@ class System(ControllableModelEntity):
         self.env_func = init_env()
         return self.env_func
 
-    def global_observation_space(self, global_obs_mask: List[Tuple[Union[ModelEntity, list]]]):
-        """
-        Translates a list of either model entities or strings (identifiers of model entities) to the respective
-        observation space corresponding to the bounds of the observed quantities.
-
-        Args:
-            global_obs_mask (ist[Tuple[Union[ModelEntity, list]]]): list of either model entities or strings
-            (identifiers of model entities) to be added to the observation of a controller
-
-        Returns:
-            gym.spaces.Dict: observation space for the quantities in the global_obs_mask
-
-        """
-        global_obs_space = {}
-        # rewrite global obs_mask to local obs_maks:
-        local_obs_mask = {}
-        nodes = [item[0] for item in global_obs_mask]
-        obs_el = [item[1] for item in global_obs_mask]
-        for count, node in enumerate(nodes):
-            local_obs_mask[node.id] = obs_el[count]
-        for node in nodes:
-            node_obs_space = node.observation_space(local_obs_mask)
-            global_obs_space[node.id] = node_obs_space
-        global_obs_space = gym.spaces.Dict({node_id: node_space for node_id, node_space in global_obs_space.items()})
-        return global_obs_space
-
-    def global_obs(self, global_obs_mask: List[Tuple[Union[ModelEntity, list]]]) -> Dict:
-        """
-        Gets values of model elements in global_obs_mask which should be added to the observation of a controller
-
-        Args:
-            global_obs_mask List[Tuple[Union[ModelEntity, list]]]: model elements which should be added to the
-            observation of a controller
-
-        Returns:
-            dict: dictionary of {entity_id: entity_observation} of all model elements in global_obs_mask
-
-        """
-        obs = OrderedDict()
-        # rewrite global obs_mask to local obs_maks:
-        local_obs_mask = {}
-        nodes = [item[0] for item in global_obs_mask]
-        obs_el = [item[1] for item in global_obs_mask]
-        for count, node in enumerate(nodes):
-            local_obs_mask[node.id] = obs_el[count]
-        for node in nodes:
-            node_obs = node.observe(local_obs_mask)
-            obs[node.id] = node_obs
-        return obs
+    def limit_date_range(self, start: datetime, end: datetime):
+        if not start >= self.date_range[0]:
+            raise ValueError(f"Start time has to be after {self.date_range[0]}.")
+        if not end <= self.date_range[1]:
+            raise ValueError(f"End time has to be before {self.date_range[1]}.")
+        self.date_range[0] = start
+        self.date_range[1] = end
 
     def _calc_date_range(self) -> list[datetime]:
 
@@ -450,7 +411,7 @@ class System(ControllableModelEntity):
                     )
 
             # upper limit reduced by control horizon to not run into problems during update() and forecasting
-            date_range[1] = date_range[1] - self.control_horizon
+            date_range[1] = date_range[1] - self.episode_horizon
 
         else:  # if no data providers are defined
             date_range = [datetime(1900, 1, 1), datetime(2100, 12, 31)]
@@ -488,7 +449,7 @@ class System(ControllableModelEntity):
         obs: dict = None,
         rl_action_callback: Callable = None,
         history: ModelHistory = None,
-    ) -> tuple[dict, dict, bool, bool, dict]:
+    ) -> tuple[dict, dict, dict]:
         """
         Runs one time step of the power system simulation. This includes fixing the actions computed by the system's
         controllers within the Pyomo model, solving the Pyomo model, and updating the states and data sources within
@@ -506,10 +467,6 @@ class System(ControllableModelEntity):
             dict: dictionary of rewards of all controllers {controller_id: controller_observation} AFTER applying
             the actions to the system. The rewards depend on the current state of the system and the action applied
             in this state, as well as on whether the action had to be corrected due to safety constraints.
-            bool: whether the episode has terminated (we assume that all agents terminate an episode at the same time,
-            as we have a centralized time management). Always false for continuous control
-            bool: same as above (but the gymnasium API makes a difference between terminated and truncated, which
-            can be useful for other environments but is not needed in our case)
             dict: additional information
 
         """
@@ -570,12 +527,8 @@ class System(ControllableModelEntity):
         # get observations
         obs, _ = self.observe()
 
-        # reached end of control horizon?
-        terminated = self._is_done()
-        truncated = self._is_done()
-
         info = {}
-        return obs, costs, terminated, truncated, info
+        return obs, costs, info
 
     def terminal_step(
         self,
@@ -632,20 +585,6 @@ class System(ControllableModelEntity):
         if history:
             history.log(inst, self.t)
 
-    def _is_done(self) -> bool:
-        """
-        Whether a system reached the end of the control horizon
-
-        Returns:
-            bool: True if end of horizon was reached
-
-        """
-        if self.continuous_control:
-            done = False
-        else:
-            done = self.t == self.start_time + self.control_horizon
-        return done
-
     def observe(self) -> dict:
         """
         Get observations for all controllers within the system.
@@ -663,8 +602,6 @@ class System(ControllableModelEntity):
                 node_obs = node.observe(ctrl.obs_mask)
                 if node_obs is not None:
                     ctrl_obs[node.id] = node_obs
-            if "global" in ctrl.obs_mask.keys():
-                ctrl_obs["global"] = self.global_obs(ctrl.obs_mask["global"])
             obs[ctrl_id] = ctrl_obs
         obs_info = {}
         return obs, obs_info
@@ -704,7 +641,7 @@ class System(ControllableModelEntity):
         """
         # We compute the cost only for the nominal scenario here
         # This is because we are only interested in the realized cost, i.e, at index 0.
-        for t in range(self.forecast_horizon_int):
+        for t in range(self.horizon_int):
             self.set_value(self.instance, "cost", value(self.cost_fcn(CostScenario(), self.instance, t)), idx=t)
 
         for node in self.nodes:
@@ -906,22 +843,22 @@ class Node(ControllableModelEntity):
         for el in self.model_elements:
             self._add_model_element(el)
 
-    def validate_data_providers(self, forecast_horizon: timedelta, tau: timedelta) -> None:
+    def validate_data_providers(self, horizon: timedelta, tau: timedelta) -> None:
         """
         Validates if data providers have compatible configurations.
 
         Args:
-            forecast_horizon (timedelta): Forecast horizon.
+            horizon (timedelta): Forecast horizon.
             tau (timedelta): Sample time.
         """
 
         # check if all dataproviders have an appropriate forecast horizon, data frequency
         for dp in self.data_providers:
-            if forecast_horizon != dp.horizon:
+            if horizon != dp.horizon:
                 raise EntityError(
                     self,
                     f"The Data Provider providing {dp.get_variables()} must implement a forecast horizon of"
-                    f" {forecast_horizon} instead of {dp.horizon}",
+                    f" {horizon} instead of {dp.horizon}",
                 )
             if dp.frequency != tau:
                 raise EntityError(
@@ -931,7 +868,7 @@ class Node(ControllableModelEntity):
                 )
 
         for node in self.nodes:
-            node.validate_data_providers(forecast_horizon, tau)
+            node.validate_data_providers(horizon, tau)
 
         self.is_valid = True
 

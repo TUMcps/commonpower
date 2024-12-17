@@ -15,7 +15,6 @@ from typing import List, Tuple, Union
 import gymnasium as gym
 import numpy as np
 import torch
-import wandb
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 from stable_baselines3 import PPO, SAC
@@ -23,6 +22,7 @@ from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
+import wandb
 from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
@@ -40,8 +40,7 @@ class BaseRunner:
         self,
         sys: System,
         global_controller: OptimalController = OptimalController("global"),
-        forecast_horizon: timedelta = timedelta(hours=24),
-        control_horizon: timedelta = timedelta(hours=24),
+        horizon: timedelta = timedelta(hours=24),
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         history: ModelHistory = None,
@@ -59,8 +58,7 @@ class BaseRunner:
             global_controller (OptimalController): instance of controller taking over control of all nodes
                 that have not yet been assigned a controller. Mostly used to balance the system using a market node
                 or a generator. Defaults to OptimalController("global").
-            forecast_horizon (timedelta): amount of time that the controller looks into the future
-            control_horizon (timedelta): amount of time to run before the system is reset if continuous_control=False
+            horizon (timedelta): amount of time that the controller looks into the future
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             history (ModelHistory): logger
@@ -82,8 +80,8 @@ class BaseRunner:
         # time handling
         self.start_time = None
 
-        self.forecast_horizon = forecast_horizon
-        self.control_horizon = control_horizon
+        self.horizon = horizon
+        self.episode_length = None
         self.dt = dt
         self.continuous_control = continuous_control
         # controller to balance system
@@ -125,9 +123,10 @@ class BaseRunner:
 
         """
         # initialize system
+        eps_horizon = timedelta(hours=0) if self.episode_length is None else self.dt * self.episode_length
         self.sys.initialize(
-            forecast_horizon=self.forecast_horizon,
-            control_horizon=self.control_horizon,
+            horizon=self.horizon,
+            episode_horizon=eps_horizon,
             tau=self.dt,
             continuous_control=self.continuous_control,
             solver=self.solver,
@@ -204,8 +203,8 @@ class BaseTrainer(BaseRunner):
         sys: System,
         global_controller: OptimalController = OptimalController("global"),
         wrapper: gym.Wrapper = None,
-        forecast_horizon: timedelta = timedelta(hours=24),
-        control_horizon: timedelta = timedelta(hours=24),
+        horizon: timedelta = timedelta(hours=24),
+        episode_length: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         history: ModelHistory = None,
@@ -213,6 +212,7 @@ class BaseTrainer(BaseRunner):
         save_path: str = "./saved_models/test_model",
         seed: int = None,
         normalize_actions: bool = True,
+        limited_date_range: List[datetime] = None,
     ):
         """
         Base class for any runner used for training one or multiple reinforcement learning (RL) agents.
@@ -225,8 +225,9 @@ class BaseTrainer(BaseRunner):
                 Defaults to OptimalController("global").
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
-            forecast_horizon (timedelta): amount of time that the controller looks into the future
-            control_horizon (timedelta): amount of time to run before the system is reset if continuous_control=False
+            horizon (timedelta): amount of time that the controller looks into the future
+            episode_length (int): number of time steps to simulate before the system is reset during RL training if
+                continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             history (ModelHistory): logger
@@ -236,6 +237,7 @@ class BaseTrainer(BaseRunner):
             seed (int): seed for the global random number generator of numpy (we use np.random.seed(seed) instead
             of instantiating our own generator)
             normalize_actions (bool): whether or not to normalize the action space
+            limited_date_range (list): limits the system's date range such that we only train over a specific interval
 
         Returns:
             BaseTrainer
@@ -244,8 +246,7 @@ class BaseTrainer(BaseRunner):
         super().__init__(
             sys=sys,
             global_controller=global_controller,
-            forecast_horizon=forecast_horizon,
-            control_horizon=control_horizon,
+            horizon=horizon,
             dt=dt,
             continuous_control=continuous_control,
             history=history,
@@ -253,10 +254,13 @@ class BaseTrainer(BaseRunner):
             seed=seed,
             normalize_actions=normalize_actions,
         )
+        self.limited_date_range = limited_date_range
         # environment wrapper function
         self.wrapper = wrapper
         # model save path
         self.save_path = save_path
+        # episode length for learning
+        self.episode_length = episode_length
 
     def prepare_run(self):
         """
@@ -267,10 +271,17 @@ class BaseTrainer(BaseRunner):
 
         """
         super().prepare_run()
+        # limit date range of system to only start training after changes
+        if self.limited_date_range is not None:
+            self.sys.limit_date_range(start=self.limited_date_range[0], end=self.limited_date_range[1])
+
         # create environment function according to gymnasium API
         if len(list(self.sys.get_controllers(ctrl_types=[RLBaseController]))) >= 1:
             self.env = self.sys.create_env_func(
-                self.wrapper, self.fixed_start, normalize_actions=self.normalize_actions
+                episode_length=self.episode_length,
+                wrapper=self.wrapper,
+                fixed_start=self.fixed_start,
+                normalize_actions=self.normalize_actions,
             )
 
 
@@ -283,8 +294,8 @@ class SingleAgentTrainer(BaseTrainer):
         policy: BasePolicy = None,
         wrapper: gym.Wrapper = None,
         logger: BaseLogger = None,
-        forecast_horizon: timedelta = timedelta(hours=24),
-        control_horizon: timedelta = timedelta(hours=24),
+        horizon: timedelta = timedelta(hours=24),
+        episode_length: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         history: ModelHistory = None,
@@ -292,6 +303,7 @@ class SingleAgentTrainer(BaseTrainer):
         save_path: str = "./saved_models/test_model",
         seed: int = None,
         normalize_actions: bool = True,
+        limited_date_range: List[datetime] = None,
     ):
         """
         Runner for training a single RL agent (with algorithms from the StableBaselines 3 repository).
@@ -306,8 +318,9 @@ class SingleAgentTrainer(BaseTrainer):
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             logger (BaseLogger): object for handling training logs
-            forecast_horizon (timedelta): amount of time that the controller looks into the future
-            control_horizon (timedelta): amount of time to run before the system is reset if continuous_control=False
+            horizon (timedelta): amount of time that the controller looks into the future
+            episode_length (int): number of time steps to simulate before the system is reset during RL training if
+                continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             history (ModelHistory): logger
@@ -317,6 +330,7 @@ class SingleAgentTrainer(BaseTrainer):
             seed (int): seed for the global random number generator of numpy (we use np.random.seed(seed) instead
             of instantiating our own generator)
             normalize_actions (bool): whether or not to normalize the action space
+            limited_date_range (list): limits the system's date range such that we only train over a specific interval
 
         Returns:
             SingleAgentTrainer
@@ -326,8 +340,8 @@ class SingleAgentTrainer(BaseTrainer):
             sys=sys,
             global_controller=global_controller,
             wrapper=wrapper,
-            forecast_horizon=forecast_horizon,
-            control_horizon=control_horizon,
+            horizon=horizon,
+            episode_length=episode_length,
             dt=dt,
             continuous_control=continuous_control,
             history=history,
@@ -335,6 +349,7 @@ class SingleAgentTrainer(BaseTrainer):
             save_path=save_path,
             seed=seed,
             normalize_actions=normalize_actions,
+            limited_date_range=limited_date_range,
         )
         self.alg_config = alg_config
         self.policy = policy
@@ -354,12 +369,11 @@ class SingleAgentTrainer(BaseTrainer):
         """
         self.prepare_run()
         training_steps = self.alg_config.total_steps
-        episode_length = int(self.control_horizon / self.dt)
         # Define logging interval based on config of the algorithm
         if self.alg_config.algorithm == PPO:
-            log_int = int(self.alg_config.algorithm_config.n_steps / episode_length)
+            log_int = int(self.alg_config.algorithm_config.n_steps / self.episode_length)
         elif self.alg_config.algorithm == SAC:
-            log_int = int(episode_length / self.alg_config.algorithm_config.train_freq)
+            log_int = int(self.episode_length / self.alg_config.algorithm_config.train_freq)
         else:
             log_int = 1
             print("Warning: Logging interval not defined for this algorithm. Logging after each training step.")
@@ -407,10 +421,9 @@ class DeploymentRunner(BaseRunner):
         global_controller: OptimalController = OptimalController("global"),
         alg_config: Union[SB3MetaConfig, MAPPOBaseConfig] = None,
         wrapper: gym.Wrapper = None,
-        forecast_horizon: timedelta = timedelta(hours=24),
-        control_horizon: timedelta = timedelta(hours=24),
+        horizon: timedelta = timedelta(hours=24),
         dt: timedelta = timedelta(minutes=60),
-        continuous_control: bool = False,
+        continuous_control: bool = True,
         history: ModelHistory = None,
         solver: OptSolver = get_default_solver(),
         seed: int = None,
@@ -428,8 +441,7 @@ class DeploymentRunner(BaseRunner):
                 trained
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
-            forecast_horizon (timedelta): amount of time that the controller looks into the future
-            control_horizon (timedelta): amount of time to run before the system is reset if continuous_control=False
+            horizon (timedelta): amount of time that the controller looks into the future
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             history (ModelHistory): logging
@@ -445,8 +457,7 @@ class DeploymentRunner(BaseRunner):
         super().__init__(
             sys=sys,
             global_controller=global_controller,
-            forecast_horizon=forecast_horizon,
-            control_horizon=control_horizon,
+            horizon=horizon,
             dt=dt,
             continuous_control=continuous_control,
             history=history,
@@ -513,7 +524,10 @@ class DeploymentRunner(BaseRunner):
         # We have to wrap the environment with a DeploymentWrapper to ensure compatibility
         self.env = DeploymentWrapper(
             self.sys.create_env_func(
-                self.wrapper, self.fixed_start, normalize_actions=self.normalize_actions, history=self.history
+                wrapper=self.wrapper,
+                fixed_start=self.fixed_start,
+                normalize_actions=self.normalize_actions,
+                history=self.history,
             )
         )
         # set train flag of environment to False
@@ -535,8 +549,8 @@ class MAPPOTrainer(BaseTrainer):
         global_controller: OptimalController = OptimalController("global"),
         wrapper: gym.Wrapper = None,
         logger: BaseLogger = None,
-        forecast_horizon: timedelta = timedelta(hours=24),
-        control_horizon: timedelta = timedelta(hours=24),
+        horizon: timedelta = timedelta(hours=24),
+        episode_length: int = 24,
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
         history: ModelHistory = None,
@@ -544,6 +558,7 @@ class MAPPOTrainer(BaseTrainer):
         save_path: str = "./saved_models/test_model",
         seed: int = None,
         normalize_actions: bool = True,
+        limited_date_range: List[datetime] = None,
     ):
         """
         Runner for training multiple heterogeneous agents with MAPPO/IPPO from the on-policy repository
@@ -558,8 +573,9 @@ class MAPPOTrainer(BaseTrainer):
             wrapper (gym.Wrapper): wrapper for the environment that handles the RL agents during training
                 (used for example for single-agent RL control).
             logger (BaseLogger): object for handling training logs
-            forecast_horizon (timedelta): amount of time that the controller looks into the future
-            control_horizon (timedelta): amount of time to run before the system is reset if continuous_control=False
+            horizon (timedelta): amount of time that the controller looks into the future
+            episode_length (int): number of time steps to simulate before the system is reset during RL training if
+                continuous_control=False
             dt (timedelta): control time interval
             continuous_control (bool): whether to use an infinite control horizon
             history (ModelHistory): logging
@@ -569,14 +585,15 @@ class MAPPOTrainer(BaseTrainer):
             seed (int): seed for the global random number generator of numpy (we use np.random.seed(seed) instead
             of instantiating our own generator)
             normalize_actions (bool): whether or not to normalize the action space
+            limited_date_range (list): limits the system's date range such that we only train over a specific interval
 
         """
         super().__init__(
             sys=sys,
             global_controller=global_controller,
             wrapper=wrapper,
-            forecast_horizon=forecast_horizon,
-            control_horizon=control_horizon,
+            horizon=horizon,
+            episode_length=episode_length,
             dt=dt,
             continuous_control=continuous_control,
             history=history,
@@ -584,6 +601,7 @@ class MAPPOTrainer(BaseTrainer):
             save_path=save_path,
             seed=seed,
             normalize_actions=normalize_actions,
+            limited_date_range=limited_date_range,
         )
 
         # logging
@@ -631,13 +649,16 @@ class MAPPOTrainer(BaseTrainer):
         """
         # initialize system
         self.sys.initialize(
-            forecast_horizon=self.forecast_horizon,
-            control_horizon=self.control_horizon,
+            horizon=self.horizon,
+            episode_horizon=self.dt * self.episode_length,
             tau=self.dt,
             continuous_control=self.continuous_control,
         )
         # test whether system set-up is feasible
         self.system_feasible()
+        # limit date range of system to only start training after changes
+        if self.limited_date_range is not None:
+            self.sys.limit_date_range(start=self.limited_date_range[0], end=self.limited_date_range[1])
         # get controllers
         self.controllers = self.sys.get_controllers()
         self.rl_controllers = self.sys.get_controllers(ctrl_types=[RLBaseController])
@@ -788,7 +809,7 @@ class MAPPOTrainer(BaseTrainer):
                     #             idv_rews.append(infos[count][agent_id].get('individual_reward', 0))
                     # train_infos[agent_id].update({'individual_rewards': np.mean(idv_rews)})
                     self.ep_info_buffer[agent_id].append(
-                        np.mean(self.buffer[agent_id].rewards) * int(self.forecast_horizon / self.dt)
+                        np.mean(self.buffer[agent_id].rewards) * int(self.horizon / self.dt)
                     )
                     train_infos[agent_id].update({"average_episode_rewards": safe_mean(self.ep_info_buffer[agent_id])})
 

@@ -19,6 +19,7 @@ class ControlEnv(gym.Env):
         self,
         system: ControllableModelEntity,
         continuous_control: bool = False,
+        episode_length: int = 24,
         fixed_start: datetime = None,
         normalize_action_space: bool = True,
         history: ModelHistory = None,
@@ -30,7 +31,8 @@ class ControlEnv(gym.Env):
 
         Args:
             system (ControllableModelEntity): power system including Pyomo model with all constraints
-            continuous_control (bool): whether to use an infinite control horizon
+            continuous_control (bool): if true, the environment is never resetted
+            episode_length (int): how many environment interaction steps to complete before resetting the environment
             fixed_start (datetime): if None, we will train from multiple random start times.
                 Otherwise, we will always train from the same start time.
             normalize_action_space (bool): whether to normalize the action space to [-1,1]
@@ -63,10 +65,11 @@ class ControlEnv(gym.Env):
 
         # whether to just continuously step through the year or not
         self.continuous_control = continuous_control
+        # step counter
+        self.completed_steps = 0
+        self.episode_length = episode_length
         # whether or not to train on a fixed day
         self.fixed_start = fixed_start
-
-        self.n_steps = 0
 
     def set_mode(self, mode: str):
         # set train flag of RL runners to False
@@ -114,18 +117,26 @@ class ControlEnv(gym.Env):
 
         self.current_action = action
 
-        obs, costs, terminated, truncated, info = self.sys.step(
-            rl_action_callback=self.rl_action_callback, history=self.system_history
-        )
+        obs, costs, info = self.sys.step(rl_action_callback=self.rl_action_callback, history=self.system_history)
+
+        self.completed_steps += 1
+        terminated, truncated = self._is_done()
         # extract only the info for the RL controllers
-        obs = {agent: agent_obs for agent, agent_obs in obs.items() if agent in self.controllers.keys()}
+        # the obs_handler of each controller will
+        # a) take care of removing unwanted forecasts and
+        # b) stack past observations if specified
+        obs = {
+            agent: self.controllers[agent].obs_handler.get_adjusted_obs(agent_obs)
+            for agent, agent_obs in obs.items()
+            if agent in self.controllers.keys()
+        }
         # rewards are negative costs
         rewards = {agent: -agent_cost for agent, agent_cost in costs.items() if agent in self.controllers.keys()}
         # update history with reward-penalty
         for agent_id, agent in self.controllers.items():
             agent.update_history({"reward_without_penalty": rewards[agent_id] + agent.history["safety_penalty"][-1][1]})
         # get train history at end of episode:
-        if terminated:
+        if terminated or truncated:
             self.train_history = {agent_id: copy(agent.history) for agent_id, agent in self.controllers.items()}
             for agent_id in self.controllers.keys():
                 self.episode_history[agent_id].append(
@@ -169,12 +180,11 @@ class ControlEnv(gym.Env):
         # and then never again
         super().reset(seed=seed)
 
+        self.completed_steps = 0
+        reset_time = self.sys.sample_start_date(self.fixed_start)
         # reset system history
         if self.system_history:
             self.system_history.reset()
-
-        self.n_steps = 0
-        reset_time = self.sys.sample_start_date(self.fixed_start)
         if self.train:
             self.sys.reset(reset_time)
         else:
@@ -194,7 +204,14 @@ class ControlEnv(gym.Env):
 
         obs, obs_info = self.sys.observe()
         # extract only the info for the RL controllers
-        obs = {agent: agent_obs for agent, agent_obs in obs.items() if agent in self.controllers.keys()}
+        # the obs_handler of each controller will
+        # a) take care of removing unwanted forecasts and
+        # b) stack past observations if specified
+        obs = {
+            agent: self.controllers[agent].obs_handler.get_adjusted_obs(agent_obs)
+            for agent, agent_obs in obs.items()
+            if agent in self.controllers.keys()
+        }
         return obs, obs_info
 
     def rl_action_callback(self, ctrl_id: str):
@@ -211,6 +228,26 @@ class ControlEnv(gym.Env):
         """
         return self.current_action[ctrl_id]
 
+    def _is_done(self) -> Tuple[bool, bool]:
+        """
+        Determines whether the environment has to be reset. "Done" normally means that a goal has been reached,
+        which is never the case in power systems control. It can also mean that a safety violation occured
+        (which also should not happen in our case, but could be implemented in case we want to let a system fail.)
+        "Truncated" means that we have reach the end of a pre-defined time limit and therefore want to reset.
+        We currently assume that all agents terminate an episode at the same time, as we have a centralized time
+        management
+
+        Returns:
+            tuple(bool, bool): Done, truncated
+        """
+        done = False
+        if self.continuous_control:
+            truncated = False
+        else:
+            truncated = self.completed_steps == self.episode_length
+
+        return done, truncated
+
     def _get_observation_space(self) -> gym.spaces.Dict:
         """
         Retrieve observation space from list of RL controllers and their observation masks.
@@ -222,15 +259,8 @@ class ControlEnv(gym.Env):
         # ToDo: What happens in case we don't have a box space?
         obs_spaces = OrderedDict()
         for ctrl_id, ctrl in self.controllers.items():
-            ctrl_obs_space = {}
             nodes = ctrl.get_nodes()
-            for node in nodes:
-                node_obs_space = node.observation_space(ctrl.obs_mask)
-                if node_obs_space is not None:
-                    ctrl_obs_space[node.id] = node_obs_space
-            if "global" in ctrl.obs_mask.keys():
-                ctrl_obs_space["global"] = self.sys.global_observation_space(ctrl.obs_mask["global"])
-            ctrl_obs_space = gym.spaces.Dict({node_id: node_space for node_id, node_space in ctrl_obs_space.items()})
+            ctrl_obs_space = ctrl.obs_handler.get_observation_space(nodes)
             obs_spaces[ctrl_id] = ctrl_obs_space
 
         obs_spaces = gym.spaces.Dict(obs_spaces)
