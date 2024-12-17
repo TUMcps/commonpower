@@ -9,6 +9,7 @@ from commonpower.core import System, Bus
 from commonpower.models.components import *
 from commonpower.models.buses import *
 from commonpower.models.powerflow import *
+from commonpower.control.observation_handling import ObservationHandler
 from commonpower.control.controllers import RLControllerSB3
 from commonpower.control.safety_layer.safety_layers import ActionProjectionSafetyLayer
 from commonpower.control.runners import SingleAgentTrainer, DeploymentRunner
@@ -98,6 +99,7 @@ class TestControl(unittest.TestCase):
 
         agent1 = RLControllerSB3(
             name="agent1",
+            obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=2),
             safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
         )
 
@@ -117,8 +119,8 @@ class TestControl(unittest.TestCase):
             global_controller=agent1,
             wrapper=SingleAgentWrapper,
             alg_config=alg_config,
-            forecast_horizon=horizon,
-            control_horizon=horizon,
+            horizon=horizon,
+            episode_length=24,
             logger=logger,
             save_path=model_path,
             seed=train_seed,
@@ -133,6 +135,7 @@ class TestControl(unittest.TestCase):
         # params.
         agent2 = RLControllerSB3(
             name="pretrained_agent",
+            obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=2),
             safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=model_path,
         )
@@ -146,8 +149,7 @@ class TestControl(unittest.TestCase):
             global_controller=agent2,
             alg_config=alg_config,
             wrapper=SingleAgentWrapper,
-            forecast_horizon=horizon,
-            control_horizon=horizon,
+            horizon=horizon,
             history=rl_model_history,
             seed=eval_seed,
         )
