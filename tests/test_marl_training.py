@@ -8,6 +8,7 @@ from commonpower.models.powerflow import *
 from commonpower.data_forecasting import *
 from commonpower.modeling.param_initialization import *
 from commonpower.control.controllers import RLControllerMA, OptimalController
+from commonpower.control.observation_handling import ObservationHandler
 from commonpower.control.logging_utils.callbacks import *
 from commonpower.control.wrappers import MultiAgentWrapper
 from commonpower.control.runners import MAPPOTrainer, DeploymentRunner
@@ -152,6 +153,7 @@ class TestControl(unittest.TestCase):
             print("test")
             _ = RLControllerMA(
                 name=str.join("agent", str(i)),
+                obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),
                 safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             ).add_entity(sys.nodes[i])
 
@@ -174,11 +176,13 @@ class TestControl(unittest.TestCase):
         load_path = "./saved_models/test_model"  # default location
         trained_agent_1 = RLControllerMA(
             name="trained_mappo_agent_1",
+            obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),
             safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=load_path + "/agent0",
         ).add_entity(sys.nodes[0])
         trained_agent_2 = RLControllerMA(
             name="trained_mappo_agent_2",
+            obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),
             safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=load_path + "/agent1",
         ).add_entity(sys.nodes[1])

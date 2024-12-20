@@ -59,6 +59,17 @@ def list_to_ctrl_dict(input_list: list, original_keys: dict) -> dict:
     return output_dict
 
 
+def recursive_items(dictionary):
+    """
+    Recursive extraction of all values in a nested dictionary or gym.spaces.Dict
+    """
+    for key, value in dictionary.items():
+        if isinstance(value, (gym.spaces.Dict, dict)):
+            yield from recursive_items(value)
+        else:
+            yield (key, value)
+
+
 class WrapperStack:
     def __init__(self):
         self.wrappers = []
@@ -137,10 +148,11 @@ class SingleAgentWrapper(gym.Wrapper):
         ctrl_obs_space = self.env.observation_space[self.ctrl_id]
         obs_low = np.array([])
         obs_high = np.array([])
-        for n_id, n_obs_space in ctrl_obs_space.items():
-            for el in n_obs_space.values():
-                obs_low = np.concatenate((obs_low, el.low))
-                obs_high = np.concatenate((obs_high, el.high))
+
+        for el_id, el_obs in recursive_items(ctrl_obs_space):
+            obs_low = np.concatenate((obs_low, el_obs.low))
+            obs_high = np.concatenate((obs_high, el_obs.high))
+
         self.observation_space = gym.spaces.Box(low=obs_low, high=obs_high, dtype=np.float64)
 
         ctrl_act_space = self.env.action_space[self.ctrl_id]
@@ -197,7 +209,7 @@ class SingleAgentWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(dummy_action)
         reward = reward[self.ctrl_id]
         obs = self._unpack_obs(obs)
-        if terminated:
+        if terminated or truncated:
             self.train_history = self.env.get_wrapper_attr("train_history")[self.ctrl_id]
             self.episode_history = self.env.get_wrapper_attr("episode_history")[self.ctrl_id]
         return obs, reward, terminated, truncated, info
@@ -215,9 +227,8 @@ class SingleAgentWrapper(gym.Wrapper):
         """
         ctrl_obs = obs[self.ctrl_id]
         new_obs = np.array([])
-        for n_id, n_obs in ctrl_obs.items():
-            for el_obs in n_obs.values():
-                new_obs = np.concatenate((new_obs, el_obs))
+        for el_id, el_obs in recursive_items(ctrl_obs):
+            new_obs = np.concatenate((new_obs, el_obs))
         return new_obs
 
 
@@ -394,7 +405,7 @@ class MultiAgentWrapper(gym.Wrapper):
         # convert observation dictionary to list of observations
         obs = self._unpack_obs(obs)
         obs = ctrl_dict_to_list(obs)
-        if terminated:
+        if terminated or truncated:
             self.train_history = ctrl_dict_to_list(self.env.get_wrapper_attr("train_history"))
             self.episode_history = ctrl_dict_to_list(self.env.get_wrapper_attr("episode_history"))
         rewards = ctrl_dict_to_list(rewards)
@@ -425,9 +436,8 @@ class MultiAgentWrapper(gym.Wrapper):
             # Initialize an empty array for this controller's new observations
             new_obs = np.array([])
             # Unpack the observation dictionary for this controller
-            for n_id, n_obs in ctrl_obs.items():
-                for el_obs in n_obs.values():
-                    new_obs = np.concatenate((new_obs, el_obs))
+            for el_id, el_obs in recursive_items(ctrl_obs):
+                new_obs = np.concatenate((new_obs, el_obs))
             # Add this controller's new observations to the dictionary
             new_obs_dict[ctrl_id] = new_obs
         # print(f"new_obs_dict: {new_obs_dict}")
@@ -479,13 +489,6 @@ class MultiAgentWrapper(gym.Wrapper):
 
         """
         env_obs_space = []
-
-        def recursive_items(dictionary):
-            for key, value in dictionary.items():
-                if isinstance(value, (gym.spaces.Dict)):
-                    yield from recursive_items(value)
-                else:
-                    yield (key, value)
 
         for agent_id, agent_obs_space in observation_space.items():
             lower = np.array([])

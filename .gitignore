@@ -11,6 +11,7 @@ _*
 !__init__.py
 .pytest_cache
 .venv
+.vscode/
 test_run/
 tuner/
 results/
