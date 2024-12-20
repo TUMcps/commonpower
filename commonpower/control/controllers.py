@@ -16,9 +16,11 @@ from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
+from commonpower.control.observation_handling import ObservationHandler
 from commonpower.control.util import clone_from_top_level_nodes, single_step_cost_callback
-from commonpower.core import Node, System
-from commonpower.modeling.base import ControllableModelEntity, ElementTypes
+from commonpower.core import System
+from commonpower.modeling.base import ControllableModelEntity
+from commonpower.modeling.robust_cost import BaseRobustCost, NominalCost
 from commonpower.utils.cp_exceptions import ControllerError, EntityError
 from commonpower.utils.default_solver import get_default_solver
 
@@ -27,25 +29,15 @@ class BaseController:
     def __init__(
         self,
         name: str,
-        obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
-        global_obs_elements: List[Tuple[Union[Node, list]]] = None,
-        cost_callback: Callable = single_step_cost_callback,
     ):
         """
         This is the base class for any controller type that will be implemented. It manages assignment of controllable
         entities to the controller and automatically deduces the action space from the bounds of the elements within
-        these entities. The observation space of the controller is captured within the obs_maks and defaults to all
-        model elements of type STATE or DATA. Additional elements can be passed through global_obs_elements. The most
-        important functionality of the controller is to compute the control input, a function that has to be implemented
-        by the subclasses.
+        these entities. The most important functionality of the controller is to compute the control input, a function
+        that has to be implemented by the subclasses.
 
         Args:
             name (str): name of the controller
-            obs_types (List[ElementTypes]): types of model elements of the controlled entities that are included in \
-            the observation of the controller.
-            global_obs_elements (List[Tuple[Union[Node, list]]]): additional model elements (can also be from outside \
-            the controlled entities) that should be observed.
-            cost_callback (Callable): function used to compute the stage cost (step cost) of the controller
 
         Returns:
             BaseController
@@ -59,20 +51,19 @@ class BaseController:
 
         self.history = {}
 
-        self.obs_mask = {}
-        self.obs_types = obs_types
-        self.global_obs_elements = global_obs_elements
-
         self.input_space = None
 
-        self.cost_callback = cost_callback
+        self.cost_callback = single_step_cost_callback
+
+    @property
+    def obs_mask(self):
+        return ({node_id: {} for node_id in self.node_ids}, 1)
 
     def initialize(self):
         """
         Initial set-up of controller.
         """
         self._index_entities()
-        self.set_obs_mask(self.obs_types, self.global_obs_elements)
         self.top_level_nodes = self.get_top_level_nodes()
         self.input_space = self.get_input_space()
 
@@ -310,29 +301,6 @@ class BaseController:
         """
         return self.cost_callback(ctrl=self, sys_inst=sys_inst)
 
-    def set_obs_mask(
-        self,
-        obs_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
-        glob_obs_elements: List[Tuple[Union[Node, list]]] = None,
-    ) -> dict:
-        """
-        Sets the elements observed by the controller.
-
-        Args:
-            obs_types (List[ElementTypes]): types of model elements that will be included from all entities controlled
-                by this controller.
-            glob_obs_elements List[Tuple[Union[Node, list]]]: additional model elements that have to be included
-                in the observation (may be from outside the scope of the controller).
-
-        Returns:
-            dict: observed model element ids
-
-        """
-        for node in self.nodes:
-            self.obs_mask[node.id] = [el.name for el in node.model_elements if el.type in obs_types]
-        if glob_obs_elements:
-            self.obs_mask["global"] = glob_obs_elements
-
     def get_input_space(self, normalize: bool = False) -> gym.spaces.Dict:
         """
         Derives action space of the controller from the list of its controlled entities.
@@ -406,10 +374,9 @@ class OptimalController(BaseController):
     def __init__(
         self,
         name: str,
-        cost_callback: Callable = single_step_cost_callback,
         solver: OptSolver = get_default_solver(),
         control_input_trajectory_length: int = 1,
-        objective_fcn: Callable = None,
+        cost_fcn: BaseRobustCost = NominalCost(),
     ):
         """
         Optimal controller that solves a constrained optimization problem to find the control inputs which minimize
@@ -417,36 +384,28 @@ class OptimalController(BaseController):
 
         Args:
             name (str): name of the controller
-            cost_callback (Callable, optional): function used within the cost function of the controller
-                to compute additional cost terms
             solver (OptSolver, optional): solver for optimization problem
             control_input_trajectory_length (int, optional): number of time steps the controller
                 computes control inputs for
-            objective_fcn (Callable, optional): objective function of the controller.
-                The function must have the signature of a Pyomo objective function expression.
-                If None, the default objective function is used (sum of costs over all controlled top level nodes).
+            cost_fcn (BaseRobustCost, optional): Robust cost function. Defaults to NominalCost.
 
         Returns:
             OptimalController
         """
-        super().__init__(name=name, cost_callback=cost_callback)
+        super().__init__(name=name)
         self.ctrl_type = "oc"  # optimal control
         self.sys_inst = None
         self.model = None
         self.solver = solver
+        self._cost_builder = cost_fcn
 
         self.control_input_trajectory_length = control_input_trajectory_length  # only one time step for optimal control
 
-        if not objective_fcn:
+    def get_objective_fcn(self) -> Callable:
+        def _objective_fcn(scenario, model, t):
+            return quicksum([n.cost_fcn(scenario, model, t) for n in self.top_level_nodes])
 
-            def obj_fcn_mpc(model):  # default MPC objective function
-                return quicksum(
-                    [n.cost_fcn(model, t) for t in range(len(self.sys_inst.t) - 1) for n in self.top_level_nodes]
-                )
-
-            self.objective_fcn = obj_fcn_mpc
-        else:
-            self.objective_fcn = objective_fcn
+        return _objective_fcn
 
     def reset_history(self) -> None:
         """
@@ -480,7 +439,10 @@ class OptimalController(BaseController):
 
         mdl = clone_from_top_level_nodes(self.top_level_nodes, self.sys_inst)
 
-        mdl.control_obj1 = Objective(expr=self.objective_fcn)
+        self._cost_builder.initialize(self.get_objective_fcn(), len(self.sys_inst.t) - 1)
+        self._cost_builder.add_additional_constraints(mdl)
+
+        mdl.control_obj1 = Objective(expr=self._cost_builder.obj_fcn(mdl))
 
         self.model = mdl
 
@@ -516,6 +478,7 @@ class RLBaseController(BaseController):
     def __init__(
         self,
         name: str,
+        obs_handler: ObservationHandler = ObservationHandler(),
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
@@ -532,6 +495,7 @@ class RLBaseController(BaseController):
 
         Args:
             name (str): name of the controller
+            obs_handler (ObservationHandler): entity that takes care of processing observations for RL controllers.
             train (bool): whether the controller is in training mode
             device (str): whether to use 'cpu' or 'cuda' (GPU)
             safety_layer (BaseSafetyLayer): safety layer instance
@@ -543,7 +507,8 @@ class RLBaseController(BaseController):
             RLBaseController
 
         """
-        super().__init__(name=name, cost_callback=cost_callback)
+        super().__init__(name=name)
+        self.cost_callback = cost_callback
         self.ctrl_type = "rl"  # Reinforcement Learning
         self.device = device
         self.train = train
@@ -553,12 +518,18 @@ class RLBaseController(BaseController):
         self.train_history = {}
         self.deployment_history = []
         self.denormalize_inputs = False
+        self.obs_handler = obs_handler
+
+    @property
+    def obs_mask(self):
+        return self.obs_handler.get_obs_mask()
 
     def initialize(self):
         """
         Initial set-up of controller and safety layer
         """
         super().initialize()
+        self.obs_handler.set_obs_mask(self.get_nodes())
         self.safety_layer.initialize(nodes=self.nodes, top_level_nodes=self.top_level_nodes)
 
     def reset_history(self):
@@ -769,6 +740,7 @@ class RLControllerMA(RLBaseController):
     def __init__(
         self,
         name: str,
+        obs_handler: ObservationHandler,
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
@@ -777,6 +749,7 @@ class RLControllerMA(RLBaseController):
     ):
         super().__init__(
             name=name,
+            obs_handler=obs_handler,
             cost_callback=cost_callback,
             train=train,
             device=device,

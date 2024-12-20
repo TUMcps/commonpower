@@ -3,7 +3,7 @@ Collection of component models.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import Callable, List
 
 import pyomo.environ as pyo
 from pyomo.core import ConcreteModel, Constraint, Expression
@@ -13,6 +13,7 @@ from commonpower.modeling.base import ElementTypes as et
 from commonpower.modeling.base import ModelElement
 from commonpower.modeling.mip_builder import MIPExpressionBuilder
 from commonpower.modeling.robust_constraints import ConstraintScenario
+from commonpower.modeling.robust_cost import CostScenario
 
 
 class Load(Component):
@@ -122,7 +123,7 @@ class ConventionalGen(Component):
         ]
         return model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         The cost function represents:
 
@@ -132,9 +133,9 @@ class ConventionalGen(Component):
         Note that p <= 0 for generators.
         """
         return (
-            self.get_pyomo_element("a", model) * self.get_pyomo_element("p", model)[t] ** 2
-            + self.get_pyomo_element("b", model) * self.get_pyomo_element("p", model)[t]
-            + self.get_pyomo_element("c", model)
+            scenario(self, "a", model) * scenario(self, "p", model)[t] ** 2
+            + scenario(self, "b", model) * scenario(self, "p", model)[t]
+            + scenario(self, "c", model)
         ) * self.tau
 
 
@@ -249,7 +250,7 @@ class ConventionalGenWithRateConstraints(Component):
 
         return [dyn]
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         The cost function represents:
 
@@ -259,9 +260,9 @@ class ConventionalGenWithRateConstraints(Component):
         Note that p <= 0 for generators.
         """
         return (
-            self.get_pyomo_element("a", model) * self.get_pyomo_element("p", model)[t] ** 2
-            + self.get_pyomo_element("b", model) * -self.get_pyomo_element("p", model)[t]
-            + self.get_pyomo_element("c", model)
+            scenario(self, "a", model) * scenario(self, "p", model)[t] ** 2
+            + scenario(self, "b", model) * -scenario(self, "p", model)[t]
+            + scenario(self, "c", model)
         ) * self.tau
 
 
@@ -310,7 +311,7 @@ class ESS(Component):
 
         return mb.model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Callable:
         """
         Cost of wear.
 
@@ -319,10 +320,10 @@ class ESS(Component):
         """
         return (
             (
-                self.get_pyomo_element("p", model)[t] * (self.get_pyomo_element("p_ec", model)[t])
-                - self.get_pyomo_element("p", model)[t] * (1 - self.get_pyomo_element("p_ec", model)[t])
+                scenario(self, "p", model)[t] * (scenario(self, "p_ec", model)[t])
+                - scenario(self, "p", model)[t] * (1 - scenario(self, "p_ec", model)[t])
             )
-            * self.get_pyomo_element("rho", model)
+            * scenario(self, "rho", model)
             * self.tau
         )
 
@@ -621,7 +622,7 @@ class EV(Component):
             ]
         )  # this order is necessary due to the interdependence of variables
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         Cost of wear.
 
@@ -630,10 +631,10 @@ class EV(Component):
         """
         return (
             (
-                self.get_pyomo_element("p", model)[t] * (self.get_pyomo_element("p_ec", model)[t])
-                - self.get_pyomo_element("p", model)[t] * (1 - self.get_pyomo_element("p_ec", model)[t])
+                scenario(self, "p", model)[t] * (scenario(self, "p_ec", model)[t])
+                - scenario(self, "p", model)[t] * (1 - scenario(self, "p_ec", model)[t])
             )
-            * self.get_pyomo_element("rho", model)
+            * scenario(self, "rho", model)
             * self.tau
         )
 
@@ -866,7 +867,7 @@ class EVData(Component):
             ]
         )
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         Cost of wear.
 
@@ -875,10 +876,10 @@ class EVData(Component):
         """
         return (
             (
-                self.get_pyomo_element("p", model)[t] * (self.get_pyomo_element("p_ec", model)[t])
-                - self.get_pyomo_element("p", model)[t] * (1 - self.get_pyomo_element("p_ec", model)[t])
+                scenario(self, "p", model)[t] * (scenario(self, "p_ec", model)[t])
+                - scenario(self, "p", model)[t] * (1 - scenario(self, "p_ec", model)[t])
             )
-            * self.get_pyomo_element("rho", model)
+            * scenario(self, "rho", model)
             * self.tau
         )
 
@@ -1132,7 +1133,7 @@ class HeatPumpWithoutStorageButCOP(Component):
 
         return [dyn_temp_indoor, dyn_temp_ret_fh]
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         Cost of discomfort.
 
@@ -1140,9 +1141,8 @@ class HeatPumpWithoutStorageButCOP(Component):
             cost = c * (T_{indoor} - T_{indoor\\_setpoint})^2
         """
         return (
-            self.get_pyomo_element("c", model)
-            * (self.get_pyomo_element("T_indoor", model)[t + 1] - self.get_pyomo_element("T_indoor_setpoint", model))
-            ** 2
+            scenario(self, "c", model)
+            * (scenario(self, "T_indoor", model)[t + 1] - scenario(self, "T_indoor_setpoint", model)) ** 2
             * self.tau
         )
 

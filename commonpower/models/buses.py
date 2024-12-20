@@ -12,6 +12,7 @@ from commonpower.core import Bus, Node, StructureNode
 from commonpower.modeling.base import ElementTypes as et
 from commonpower.modeling.base import ModelElement
 from commonpower.modeling.mip_builder import MIPExpressionBuilder
+from commonpower.modeling.robust_cost import CostScenario
 from commonpower.utils.cp_exceptions import EntityError
 
 
@@ -21,15 +22,15 @@ class OptSelfSufficiencyNode(Bus):
     grid as possible (we do not currently consider the reactive power).
     """
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         Defines a cost function that contains the costs from the household components (self.nodes) plus the total power
         of the household to maximize self-sufficiency. Since the total power p is positive if the household has to
         import power from the grid, we minimize p.
         """
         if self.nodes:
-            grid_import_cost = self.get_pyomo_element("p", model)
-            return quicksum([n.cost_fcn(model, t) for n in self.nodes]) + grid_import_cost[t]
+            grid_import_cost = scenario(self, "p", model)
+            return quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes]) + grid_import_cost[t]
         else:
             raise EntityError(self, "Cannot define self-sufficiency cost function for an entity without components")
 
@@ -82,7 +83,7 @@ class RTPricedBus(Bus):
         else:
             return model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = \\sum_{i \\in components} cost_i + p * psib * p_{eb} + p * psis * (1 - p_{eb})
@@ -90,22 +91,22 @@ class RTPricedBus(Bus):
         if self.nodes:
             if self.stand_alone is True:
                 return (
-                    quicksum([n.cost_fcn(model, t) for n in self.nodes])
+                    quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes])
                     + (
-                        self.get_pyomo_element("p", model)[t]
-                        * (1 - self.get_pyomo_element("p_eb", model)[t])
-                        * self.get_pyomo_element("psis", model)[t]
+                        scenario(self, "p", model)[t]
+                        * (1 - scenario(self, "p_eb", model)[t])
+                        * scenario(self, "psis", model)[t]
                         * self.tau
                     )
                     + (
-                        self.get_pyomo_element("p", model)[t]
-                        * self.get_pyomo_element("p_eb", model)[t]
-                        * self.get_pyomo_element("psib", model)[t]
+                        scenario(self, "p", model)[t]
+                        * scenario(self, "p_eb", model)[t]
+                        * scenario(self, "psib", model)[t]
                         * self.tau
                     )
                 )
             else:
-                return quicksum([n.cost_fcn(model, t) for n in self.nodes])
+                return quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes])
         else:
             return 0.0
 
@@ -129,18 +130,18 @@ class RTPricedBusLinear(Bus):
 
         return model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = \\sum_{i \\in components} cost_i + p * psi
         """
         if self.nodes:
             if self.stand_alone:
-                return quicksum([n.cost_fcn(model, t) for n in self.nodes]) + (
-                    self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau
+                return quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes]) + (
+                    scenario(self, "p", model)[t] * scenario(self, "psi", model)[t] * self.tau
                 )
             else:
-                return quicksum([n.cost_fcn(model, t) for n in self.nodes])
+                return quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes])
         else:
             return 0.0
 
@@ -187,20 +188,20 @@ class TradingBus(Bus):
 
         return mb.model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = -p * psis * p_{es} -p * psib * (1 - p_{es})
         """
         return -(
-            self.get_pyomo_element("p", model)[t]
-            * (1 - self.get_pyomo_element("p_es", model)[t])
-            * self.get_pyomo_element("psib", model)[t]
+            scenario(self, "p", model)[t]
+            * (1 - scenario(self, "p_es", model)[t])
+            * scenario(self, "psib", model)[t]
             * self.tau
         ) - (
-            self.get_pyomo_element("p", model)[t]
-            * self.get_pyomo_element("p_es", model)[t]
-            * self.get_pyomo_element("psis", model)[t]
+            scenario(self, "p", model)[t]
+            * scenario(self, "p_es", model)[t]
+            * scenario(self, "psis", model)[t]
             * self.tau
         )
 
@@ -235,12 +236,12 @@ class TradingBusLinear(Bus):
 
         return model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = -p * psi
         """
-        return -(self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau)
+        return -(scenario(self, "p", model)[t] * scenario(self, "psi", model)[t] * self.tau)
 
     def _get_internal_power_balance_constraints(self) -> List[ModelElement]:
         # overwrites super(), because otherwise p=0 would be enforced
@@ -273,7 +274,7 @@ class CarbonAwareTradingBus(TradingBus):
 
         return model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = (-p * psis * p_{es} -p * psib * (1 - p_{es})) + (a * p^b) / ci
@@ -282,22 +283,19 @@ class CarbonAwareTradingBus(TradingBus):
         """
         return (
             -(
-                self.get_pyomo_element("p", model)[t]
-                * (1 - self.get_pyomo_element("p_es", model)[t])
-                * self.get_pyomo_element("psib", model)[t]
+                scenario(self, "p", model)[t]
+                * (1 - scenario(self, "p_es", model)[t])
+                * scenario(self, "psib", model)[t]
                 * self.tau
             )
             - (
-                self.get_pyomo_element("p", model)[t]
-                * self.get_pyomo_element("p_es", model)[t]
-                * self.get_pyomo_element("psis", model)[t]
+                scenario(self, "p", model)[t]
+                * scenario(self, "p_es", model)[t]
+                * scenario(self, "psis", model)[t]
                 * self.tau
             )
-        ) + (
-            self.get_pyomo_element("a", model)
-            * self.get_pyomo_element("p", model)[t] ** self.get_pyomo_element("b", model)
-        ) / self.get_pyomo_element(
-            "ci", model
+        ) + (scenario(self, "a", model) * scenario(self, "p", model)[t] ** scenario(self, "b", model)) / scenario(
+            self, "ci", model
         )[
             t
         ] * self.tau
@@ -326,14 +324,13 @@ class CarbonAwareTradingBusLinear(TradingBusLinear):
 
         return model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = - p * psi + (a * p^b) / ci)
         """
-        return (-self.get_pyomo_element("p", model)[t] * self.get_pyomo_element("psi", model)[t] * self.tau) + (
-            self.get_pyomo_element("a", model)
-            * self.get_pyomo_element("p", model)[t] ** self.get_pyomo_element("b", model)
+        return (-scenario(self, "p", model)[t] * scenario(self, "psi", model)[t] * self.tau) + (
+            scenario(self, "a", model) * scenario(self, "p", model)[t] ** scenario(self, "b", model)
         ) * self.tau
 
 
@@ -393,7 +390,7 @@ class EnergyCommunity(StructureNode):
 
         return [p_sum_c] + mb.model_elements
 
-    def cost_fcn(self, model: ConcreteModel, t: int) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int) -> Expression:
         """
         .. math::
             cost = \\sum_{j \\in coalition} \\sum_{i \\in components} cost_ji
@@ -401,17 +398,17 @@ class EnergyCommunity(StructureNode):
         """
         if self.nodes:
             return (
-                quicksum([n.cost_fcn(model, t) for n in self.nodes])
+                quicksum([n.cost_fcn(scenario, model, t) for n in self.nodes])
                 + (
-                    self.get_pyomo_element("p_sum", model)[t]
-                    * (1 - self.get_pyomo_element("p_eb", model)[t])
-                    * self.get_pyomo_element("psis", model)[t]
+                    scenario(self, "p_sum", model)[t]
+                    * (1 - scenario(self, "p_eb", model)[t])
+                    * scenario(self, "psis", model)[t]
                     * self.tau
                 )
                 + (
-                    self.get_pyomo_element("p_sum", model)[t]
-                    * self.get_pyomo_element("p_eb", model)[t]
-                    * self.get_pyomo_element("psib", model)[t]
+                    scenario(self, "p_sum", model)[t]
+                    * scenario(self, "p_eb", model)[t]
+                    * scenario(self, "psib", model)[t]
                     * self.tau
                 )
             )

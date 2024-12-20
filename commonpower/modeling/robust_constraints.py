@@ -11,6 +11,7 @@ from pyomo.core import ConcreteModel, Param, Var
 
 from commonpower.modeling.base import ElementTypes, ModelElement, ModelEntity
 from commonpower.modeling.param_initialization import ParamInitializer
+from commonpower.modeling.util import SubscriptableFloat
 
 if TYPE_CHECKING:
     from commonpower.core import Node
@@ -138,8 +139,8 @@ class RobustConstraintBuilder:
         self.var_constraint_map: dict[str, _RobustConstraintSignature | _MultiConstraintSignature] = var_constraint_map
 
         # only consider uncertain params and data if they are actually used in robust constraints
-        used_uncertain_params = list(set([el for sig in self.robust_constraints for el in sig.uncertain_params]))
-        self.uncertain_params = list(set(self.uncertain_params) & set(used_uncertain_params))
+        # used_uncertain_params = list(set([el for sig in self.robust_constraints for el in sig.uncertain_params]))
+        # self.uncertain_params = list(set(self.uncertain_params) & set(used_uncertain_params))
 
     def _get_bounds_for_uncertain_param(self, el: ModelElement) -> list[ModelElement]:
         """
@@ -609,26 +610,4 @@ class _ConstraintSignatureExtractor(ConstraintScenario):
             self.signature.vars = list(set(self.signature.vars))
             self.signature.params = list(set(self.signature.params))
 
-        return _SubscriptableFloat(1.0)
-
-
-class _SubscriptableFloat(float):
-    """
-    This is a dummy class to "fake" the behaviour of a model element
-    when extracting the signature from a constraint expression.
-    """
-
-    def __getitem__(self, _):
-        """Make the float subscriptable by returning itself for any index"""
-        return self
-
-    def is_indexed(self):
-        return False
-
-    @property
-    def ub(self):
-        return self
-
-    @property
-    def lb(self):
-        return self
+        return SubscriptableFloat(1.0)

@@ -7,7 +7,7 @@ import json
 import logging
 from collections import OrderedDict
 from enum import IntEnum
-from typing import TYPE_CHECKING, Dict, Union
+from typing import TYPE_CHECKING, Dict, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -17,6 +17,7 @@ from pyomo.core import Block, ConcreteModel, Constraint, Expression, Objective, 
 
 from commonpower.data_forecasting.base import DataProvider
 from commonpower.modeling.param_initialization import ParamInitializer
+from commonpower.modeling.robust_cost import CostScenario
 from commonpower.modeling.util import get_element_from_model
 from commonpower.utils import rgetattr, rsetattr
 from commonpower.utils.cp_exceptions import EntityError
@@ -384,6 +385,9 @@ class ModelEntity:
         self.data_providers.append(data_provider)
         return self
 
+    def clear_data_providers(self):
+        self.data_providers = []
+
     def get_pyomo_element(self, name: str, model: ConcreteModel) -> Union[Var, Param, Set, Constraint, Objective]:
         """
         Gets a pyomo element referenced by name from the given model.
@@ -557,7 +561,7 @@ class ModelEntity:
     def get_children(self) -> list[ModelEntity]:
         return []
 
-    def cost_fcn(self, model: ConcreteModel, t: int = 0) -> Expression:
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
         """
         Returns the pyomo expression of the entity's cost function.
 
@@ -765,13 +769,14 @@ class ControllableModelEntity(ModelEntity):
             )
             return input_space
 
-    def observation_space(self, obs_mask: dict):
+    def observation_space(self, obs_mask: Tuple[dict, int]):
         """
         Determines the observation space of an entity based on the observation mask by retrieving
         the bounds of the model elements listed in the mask
 
         Args:
-            obs_mask (dict): dictionary containing the IDs of model elements which should be observed
+            obs_mask Tuple(dict, int): tuple with a) dictionary containing the IDs of model elements which should
+            be observed, b) number of forecast steps that should be included in observation
 
         Returns:
             None/gym.spaces.Dict: None if the node has no elements that should be observed, else a dictionary as in
@@ -780,7 +785,8 @@ class ControllableModelEntity(ModelEntity):
         """
         # ToDo: check type of variables/data --> if they are binary, we cannot use box spaces?
         # for now all model elements with type DATA and STATE are observations
-        obs = [e for e in self.model_elements if e.name in obs_mask[self.id]]
+        observed_model_elements, n_forecasts = obs_mask
+        obs = [e for e in self.model_elements if e.name in observed_model_elements[self.id]]
         lower = {}
         upper = {}
         for e in obs:
@@ -804,6 +810,9 @@ class ControllableModelEntity(ModelEntity):
                 else:
                     lower[e.name] = [-np.inf for idx in pyomo_el.index_set()] if pyomo_el.is_indexed() else -np.inf
                     upper[e.name] = [np.inf for idx in pyomo_el.index_set()] if pyomo_el.is_indexed() else np.inf
+                # limit length of observation space to num of desired forecasts
+                lower[e.name] = lower[e.name][0:n_forecasts]
+                upper[e.name] = upper[e.name][0:n_forecasts]
 
         if lower:
             obs_space = gym.spaces.Dict(
@@ -821,25 +830,27 @@ class ControllableModelEntity(ModelEntity):
         else:
             return None
 
-    def observe(self, obs_mask: Dict) -> dict:
+    def observe(self, obs_mask: Tuple[dict, int]) -> dict:
         """
         Get observations for one node within the system based on the model items within the observation mask.
 
         Args:
-            obs_mask (dict): dictionary containing the IDs of model elements which should be observed
+            obs_mask Tuple(dict, int): tuple with a) dictionary containing the IDs of model elements which should
+            be observed, b) number of forecast steps that should be included in observation
 
         Returns:
             dict: dict of observed values as {element ID: value}
 
         """
         obs = OrderedDict()
+        observed_model_elements, n_forecasts = obs_mask
         for el in self.model_elements:
-            if el.name in obs_mask[self.id]:
+            if el.name in observed_model_elements[self.id]:
                 # for states, we only want to get the current value
                 if el.type == ElementTypes.STATE:
                     obs[el.name] = np.array(self.get_value(self.instance, el.name))[0].reshape((1,))
                 else:
-                    obs[el.name] = np.array(self.get_value(self.instance, el.name))
+                    obs[el.name] = np.array(self.get_value(self.instance, el.name)[0:n_forecasts])
 
         if len(obs) == 0:
             return None

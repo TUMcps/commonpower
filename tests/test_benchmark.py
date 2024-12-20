@@ -141,7 +141,7 @@ class TestBenchmark(unittest.TestCase):
         oc_history = ModelHistory([sys])
         test_day = "20.11.2016"
         eval_seed = 5
-        oc_deployer = DeploymentRunner(sys=sys, forecast_horizon=forecast_horizon, history=oc_history, seed=eval_seed)
+        oc_deployer = DeploymentRunner(sys=sys, horizon=forecast_horizon, history=oc_history, seed=eval_seed)
 
         return sys, oc_deployer, test_day
 
