@@ -614,13 +614,15 @@ class RLBaseController(BaseController):
                 # we actually want to predict the action (called by DeploymentRunner._run())
                 action = self.predict_action(obs)
                 action = self.act_array_to_dict(action)
+                verified_action = action  # will be verified later, see below
+                safety_penalty = 0.0
             else:
                 # we just pass the action on
                 action = input_callback(self.name)
-            verified_action, action_corrected, safety_penalty = self.safety_layer.compute_safe_action(action)
-            # clip actions to bounds to account for numerical errors
-            verified_action = self.clip_to_bounds(verified_action)
-            self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
+                verified_action, action_corrected, safety_penalty = self.safety_layer.compute_safe_action(action)
+                # clip actions to bounds to account for numerical errors
+                verified_action = self.clip_to_bounds(verified_action)
+                self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
         return verified_action, safety_penalty
 
     def predict_action(self, obs: np.ndarray, deterministic: bool = True) -> np.ndarray:
