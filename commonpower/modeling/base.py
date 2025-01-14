@@ -380,7 +380,7 @@ class ModelEntity:
             data_provider (DataProvider): Data provider instance.
 
         Returns:
-            Component: Component instance.
+            ModelEntity: ModelEntity instance.
         """
         self.data_providers.append(data_provider)
         return self

@@ -140,11 +140,22 @@ class DataProvider:
 
         self.horizon = forecaster.horizon
         self.frequency = forecaster.frequency
-        self.observable_features = observable_features or data_source.get_variables()
+        self.observable_features = (
+            observable_features if observable_features is not None else data_source.get_variables()
+        )
 
         self.last_provided_data: dict[str, tuple[np.ndarray]] = {}  # Stores the last provided data (obs + forecast)
 
         self.perfect_knowledge_override: bool = False
+
+    def empty_copy(self) -> DataProvider:
+        """
+        Returns a copy of the DataProvider.
+
+        Returns:
+            DataProvider: Copy of the DataProvider.
+        """
+        return DataProvider(self.data, self.forecaster, self.observable_features)
 
     def get_variables(self) -> List[str]:
         """
@@ -266,9 +277,11 @@ class DataProvider:
     def observation_bounds(self, time: datetime) -> dict[str, list[tuple[float]]]:
         """
         Returns the observation bounds for all elements in the data source.
-        The default is "guaranteed least-conservative bounds", i.e., the bounds are based on the absolute difference
-        between forecast and true value. This only works if the true data is available.
-        The returned bounds span the forecast horizon.
+        The default is "guaranteed symmetrical bounds", i.e., the bounds are based on the absolute difference
+        between forecast and true value.
+        Accordingly, the true value is always either the upper or lower limit of the forecast bounds.
+        This only works if the true data is available.
+        We return bounds for each time step in the forecast horizon.
 
         Args:
             time (datetime): Current time.

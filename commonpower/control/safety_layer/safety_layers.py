@@ -200,6 +200,8 @@ class ActionReplacementWithOptSafetyLayer(BaseSafetyLayer):
             TerminationCondition.unbounded,
             TerminationCondition.infeasibleOrUnbounded,
         ]:
+            with open("infeasible_safety_model.log", "w") as f:
+                model.pprint(f)
             return None
 
         distance_from_action = value(self.action_distance(model, self.unsafe_action))

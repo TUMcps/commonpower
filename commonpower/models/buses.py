@@ -432,3 +432,4 @@ class EnergyCommunity(StructureNode):
 
         super().add_node(node)
         node.set_as_structure_member()
+        return self

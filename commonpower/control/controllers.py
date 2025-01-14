@@ -1,6 +1,8 @@
 """
 Collection of pre-defined controller types.
 """
+from __future__ import annotations
+
 import warnings
 from collections import OrderedDict
 from copy import copy, deepcopy
@@ -179,7 +181,7 @@ class BaseController:
         for node in self.nodes:
             self.node_ids.append(node.id)
 
-    def add_system(self, system: System):
+    def add_system(self, system: System) -> BaseController:
         """
         When adding a system to a controller, the system tree is searched recursively and all controllable entities
         that do not yet have a controller are added to 'nodes'.
@@ -401,7 +403,29 @@ class OptimalController(BaseController):
 
         self.control_input_trajectory_length = control_input_trajectory_length  # only one time step for optimal control
 
+    def empty_copy(self):
+        """
+        Create a fresh copy of the controller without any history.
+
+        Returns:
+            OptimalController: cloned controller
+        """
+        cloned_controller = OptimalController(
+            name=self.name,
+            solver=self.solver,
+            control_input_trajectory_length=self.control_input_trajectory_length,
+            cost_fcn=self._cost_builder,
+        )
+        return cloned_controller
+
     def get_objective_fcn(self) -> Callable:
+        """
+        Constructs the objective function for the optimal control problem.
+
+        Returns:
+            Callable: Pyomo expression of the objective function.
+        """
+
         def _objective_fcn(scenario, model, t):
             return quicksum([n.cost_fcn(scenario, model, t) for n in self.top_level_nodes])
 
@@ -454,7 +478,8 @@ class OptimalController(BaseController):
             TerminationCondition.unbounded,
             TerminationCondition.infeasibleOrUnbounded,
         ]:
-            self.model.pprint()
+            with open("infeasible_control_model.log", "w") as f:
+                self.model.pprint(f)
             raise EntityError(self.model, "Cannot find an input satisfying all constraints")
 
         node_actions = {}
@@ -478,7 +503,7 @@ class RLBaseController(BaseController):
     def __init__(
         self,
         name: str,
-        obs_handler: ObservationHandler = ObservationHandler(),
+        obs_handler: ObservationHandler = None,
         train: bool = True,
         device: str = "cpu",
         safety_layer=None,
@@ -518,7 +543,7 @@ class RLBaseController(BaseController):
         self.train_history = {}
         self.deployment_history = []
         self.denormalize_inputs = False
-        self.obs_handler = obs_handler
+        self.obs_handler = obs_handler or ObservationHandler()
 
     @property
     def obs_mask(self):
@@ -614,13 +639,15 @@ class RLBaseController(BaseController):
                 # we actually want to predict the action (called by DeploymentRunner._run())
                 action = self.predict_action(obs)
                 action = self.act_array_to_dict(action)
+                verified_action = action  # will be verified later, see below
+                safety_penalty = 0.0
             else:
                 # we just pass the action on
                 action = input_callback(self.name)
-            verified_action, action_corrected, safety_penalty = self.safety_layer.compute_safe_action(action)
-            # clip actions to bounds to account for numerical errors
-            verified_action = self.clip_to_bounds(verified_action)
-            self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
+                verified_action, action_corrected, safety_penalty = self.safety_layer.compute_safe_action(action)
+                # clip actions to bounds to account for numerical errors
+                verified_action = self.clip_to_bounds(verified_action)
+                self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
         return verified_action, safety_penalty
 
     def predict_action(self, obs: np.ndarray, deterministic: bool = True) -> np.ndarray:

@@ -3,7 +3,6 @@ Core power system entities.
 """
 from __future__ import annotations
 
-import logging
 import pickle
 import random
 import re
@@ -35,6 +34,15 @@ class PowerFlowModel:
     Generic class to model power flow constraints.
     """
 
+    def empty_copy(self) -> PowerFlowModel:
+        """
+        Creates a fresh copy of the power flow model.
+
+        Returns:
+            PowerFlowModel: Cloned power flow model instance.
+        """
+        return self.__class__()
+
     def add_to_model(self, model: ConcreteModel, nodes: List[Node], lines: List[Line]) -> None:
         """
         Specifies the power flow constraints and adds them to the given model instance.
@@ -50,8 +58,6 @@ class PowerFlowModel:
 
         for nid, node in enumerate(nodes):
             connected_lines = [line for line in lines if node in [line.src, line.dst]]
-            if not connected_lines and len(nodes) > 1:
-                logging.warning(f"The node {node.name} has no power lines connected to it")
             self._set_bus_constraint(model, nid, node, connected_lines)
 
         for lid, line in enumerate(lines):
@@ -129,6 +135,23 @@ class System(ControllableModelEntity):
         self.solver = None  # solver for optimization problem
 
         self._cost_builder: BaseRobustCost = None
+
+    def empty_copy(self, with_entities: bool = True) -> System:
+        """
+        Creates a fresh copy of the system.
+
+        Returns:
+            System: Cloned system instance.
+        """
+        new_sys = System(self.power_flow_model.empty_copy())
+
+        if with_entities:
+            for node in self.nodes:
+                new_sys.add_node(node.empty_copy(with_children=True))
+            for line in self.lines:
+                new_sys.add_line(line.empty_copy())
+
+        return new_sys
 
     def add_node(self, node: Node, at_index: Union[None, int] = None) -> System:
         """
@@ -364,8 +387,6 @@ class System(ControllableModelEntity):
 
         """
         # ToDo: multiple threads using SubprocVecEnv, one thread using DummyVecEnv?
-        if not self.controllers:
-            raise SystemError("No control assigned to system")
 
         def init_env():
             env = ControlEnv(
@@ -498,6 +519,8 @@ class System(ControllableModelEntity):
             TerminationCondition.unbounded,
             TerminationCondition.infeasibleOrUnbounded,
         ]:
+            with open("infeasible_model.log", "w") as f:
+                inst.pprint(f)
             raise InstanceError(self, "Solving the model with current inputs is infeasible or unbounded")
 
         # execute unmodeled updates
@@ -732,6 +755,15 @@ class Line(ControllableModelEntity):
         # This does not work anymore since the ids are set on sys init now
         self.id = self.CLASS_INDEX + "_" + "%05x" % random.randrange(16**5)
 
+    def empty_copy(self) -> Line:
+        """
+        Creates a fresh copy of the line.
+
+        Returns:
+            Line: Cloned line instance.
+        """
+        return self.__class__(self.src, self.dst, self.config, self.name)
+
 
 class Node(ControllableModelEntity):
     CLASS_INDEX = "nx"
@@ -785,7 +817,30 @@ class Node(ControllableModelEntity):
 
         self.robust_constraint_builder = None  # set in add_to_model()
 
-        self.nodes = []
+        self.nodes: list[Node] = []
+
+    def empty_copy(self, with_children: bool = True, with_data_providers: bool = True) -> Node:
+        """
+        Creates a fresh copy of the node.
+
+        Args:
+            with_children (bool): Whether to clone the node's children.
+            with_data_providers (bool): Whether to clone the node's data providers.
+
+        Returns:
+            Node: Cloned node instance.
+        """
+        new_node = self.__class__(self.name, self.config)
+
+        if with_data_providers:
+            for dp in self.data_providers:
+                new_node.add_data_provider(dp.empty_copy())
+
+        if with_children:
+            for node in self.nodes:
+                new_node.add_node(node.empty_copy(with_children=with_children, with_data_providers=with_data_providers))
+
+        return new_node
 
     def set_id(self, parent_identity: str = "", number: int = 0) -> None:
         """

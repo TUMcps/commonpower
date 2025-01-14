@@ -103,3 +103,5 @@ class MAPPOBaseConfig(BaseModel):
     ifi: float = 0.1
     # args from Commonpower
     penalty_factor: float = 0.0
+    # custom, not in the original MAPPO implementation
+    log_std_init: float = 0.0
