@@ -124,6 +124,7 @@ def tune(
     tune_config: ray_tune.TuneConfig,
     tune_run_config: ray_train.RunConfig,
     tuner_result_dir: str,
+    tuner_resources: dict[str, int] = {'cpu': 8, 'gpu': 1},
 ) -> tuple[NNForecaster, str]:
     """
     Tunes the hyperparameters of an NNForecaster.
@@ -141,7 +142,7 @@ def tune(
     tuner = ray_tune.Tuner(
         trainable=ray_tune.with_resources(
             ray_tune.with_parameters(NNTrainer, **dict(train_config)),
-            resources={'cpu': 16, 'gpu': 1},
+            resources=tuner_resources,
         ),
         param_space=train_config.parameter_space.model_dump(),
         tune_config=tune_config,

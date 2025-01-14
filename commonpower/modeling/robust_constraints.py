@@ -572,7 +572,7 @@ class _ConstraintSignatureExtractor(ConstraintScenario):
         """
         Utility class to extract the signature of a robust constraint from the constraint expression.
         The extractor "fakes" being a constraint scenario and stores all element calls when
-        an expression that is was passed to is called.
+        an expression that was passed to is called.
         This way, we obtain all (uncertain) parameters and variables used in the constraint expression.
         Args:
             builder (RobustConstraintBuilder): Builder instance.

@@ -188,7 +188,7 @@ class ControlEnv(gym.Env):
         if self.train:
             self.sys.reset(reset_time)
         else:
-            # environment is already reset once in deployment runner. We only have to reset it once more her
+            # environment is already reset once in deployment runner. We only have to reset it once more here
             # in case we use pre-trained RL policies (load them from a directory)
             if len(self.controllers) > 0:
                 # check if we are working with pre-trained policies

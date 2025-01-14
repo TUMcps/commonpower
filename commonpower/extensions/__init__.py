@@ -1,3 +1,3 @@
 """
-Extended functionality, e.g., network import or node factories.
+Extended functionality, e.g., network import, node factories, cost allocation, etc.
 """
