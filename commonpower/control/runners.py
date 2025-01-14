@@ -39,7 +39,7 @@ class BaseRunner:
     def __init__(
         self,
         sys: System,
-        global_controller: OptimalController = OptimalController("global"),
+        global_controller: OptimalController = None,
         horizon: timedelta = timedelta(hours=24),
         dt: timedelta = timedelta(minutes=60),
         continuous_control: bool = False,
@@ -85,14 +85,15 @@ class BaseRunner:
         self.dt = dt
         self.continuous_control = continuous_control
         # controller to balance system
-        self.global_controller = global_controller.add_system(self.sys)
+        self.global_controller = global_controller or OptimalController("global")
+        self.global_controller = self.global_controller.add_system(self.sys)
         # model history for logging
         self.history = history or ModelHistory([sys])
         # seed for global random number generator
         if seed is not None:
             self.seed = seed
         else:
-            warnings.warn("No seed given. Selecting a random seed.")
+            # warnings.warn("No seed given. Selecting a random seed.")
             self.seed = random.randint(1, 100)
         # normalizing actions of controllers (just matters for RL controllers)
         self.normalize_actions = normalize_actions
@@ -418,7 +419,7 @@ class DeploymentRunner(BaseRunner):
     def __init__(
         self,
         sys: System,
-        global_controller: OptimalController = OptimalController("global"),
+        global_controller: OptimalController = None,
         alg_config: Union[SB3MetaConfig, MAPPOBaseConfig] = None,
         wrapper: gym.Wrapper = None,
         horizon: timedelta = timedelta(hours=24),
