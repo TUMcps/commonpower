@@ -18,6 +18,7 @@ from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 
 from commonpower.control.environments import ControlEnv
+from commonpower.control.observation_handling import Observer
 from commonpower.data_forecasting import DataProvider
 from commonpower.modeling.base import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity
 from commonpower.modeling.history import ModelHistory
@@ -135,6 +136,8 @@ class System(ControllableModelEntity):
         self.solver = None  # solver for optimization problem
 
         self._cost_builder: BaseRobustCost = None
+
+        self.observer = Observer()
 
     def empty_copy(self, with_entities: bool = True) -> System:
         """
@@ -553,6 +556,15 @@ class System(ControllableModelEntity):
         info = {}
         return obs, costs, info
 
+    def observe(self) -> dict:
+        """
+        Observe all system states and external variables
+
+        Returns:
+            dict: dictionary of {controller_id: controller_observation}
+        """
+        return self.observer.observe(self.controllers)
+
     def terminal_step(
         self,
         history: ModelHistory = None,
@@ -607,27 +619,6 @@ class System(ControllableModelEntity):
 
         if history:
             history.log(inst, self.t)
-
-    def observe(self) -> dict:
-        """
-        Get observations for all controllers within the system.
-
-        Returns:
-            dict: dictionary of {controller_id: controller_observation}
-
-        """
-        obs = OrderedDict()
-        for ctrl_id, ctrl in self.controllers.items():
-            ctrl_obs = OrderedDict()
-            nodes = ctrl.get_nodes()
-            nodes = [n for n in nodes if not isinstance(n, System)]
-            for node in nodes:
-                node_obs = node.observe(ctrl.obs_mask)
-                if node_obs is not None:
-                    ctrl_obs[node.id] = node_obs
-            obs[ctrl_id] = ctrl_obs
-        obs_info = {}
-        return obs, obs_info
 
     def pprint(self) -> None:
         """
