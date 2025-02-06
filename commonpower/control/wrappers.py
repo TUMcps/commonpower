@@ -70,6 +70,24 @@ def recursive_items(dictionary):
             yield (key, value)
 
 
+def obs_ids_and_values(dictionary, parent_key=""):
+    """
+    Recursive extraction of all values in a nested dictionary or gym.spaces.Dict
+    """
+    identifiers = []
+    all_values = []
+    for key, value in dictionary.items():
+        full_key = f"{parent_key}.{key}" if parent_key and not parent_key == "global" else key
+        if isinstance(value, (gym.spaces.Dict, dict)):
+            sub_identifiers, sub_values = obs_ids_and_values(value, full_key)
+            identifiers.extend(sub_identifiers)
+            all_values.extend(sub_values)
+        else:
+            identifiers.append(full_key)
+            all_values.append(value)
+    return identifiers, all_values
+
+
 class WrapperStack:
     def __init__(self):
         self.wrappers = []
@@ -307,7 +325,7 @@ class RecordTransitionsWrapper(gym.Wrapper):
 
 
 class MultiAgentWrapper(gym.Wrapper):
-    def __init__(self, env):
+    def __init__(self, env: ControlEnv, remove_redundant_obs: bool = True):
         """
         Wrapper to standardize ControlEnv to the API for MAPPO/IPPO implementation of the on-policy repository
         (https://github.com/marlbenchmark/on-policy/tree/main/onpolicy). NOTE: We use our own fork of this repository,
@@ -315,6 +333,8 @@ class MultiAgentWrapper(gym.Wrapper):
 
         Args:
             env (ControlEnv): power system environment with multi-agent API
+            remove_redundant_obs (bool): whether to remove redundant observations in the shared observation space
+
 
         Returns:
              MultiAgentWrapper
@@ -323,29 +343,16 @@ class MultiAgentWrapper(gym.Wrapper):
         super().__init__(env)
         self.env = env
         self.n_agents = len(self.get_wrapper_attr("controllers"))
+        self.last_shared_obs = None
+        self.remove_redundant_obs = remove_redundant_obs
         # training history
         self.train_history = {}
         self.episode_history = {}
         # the MAPPO/IPPO implementation expects the action/observation space as a list of lists
         self.action_space, self.original_action_keys = self.act_space_dict_to_list(self.action_space)
-        self.observation_space = self.obs_space_dict_to_list(self.observation_space)
-
-        # The shared observation space is a list with as many entries as we have agents. Each entry contains a numpy
-        # array with the stacked observation space of all agents for now
-        # (even if there are redundant observations)
-        # TODO: remove redundant observations
-        total_n_obs = sum([len(agent_obs_space.low) for agent_obs_space in self.observation_space])
-        share_low = np.empty(shape=(total_n_obs,))
-        share_high = np.empty(shape=(total_n_obs,))
-        n_obs = 0
-        for agent_obs in self.observation_space:
-            n_agent_obs = len(agent_obs.low)
-            share_low[n_obs : n_obs + n_agent_obs] = agent_obs.low
-            share_high[n_obs : n_obs + n_agent_obs] = agent_obs.high
-            n_obs = n_obs + n_agent_obs
-        self.unwrapped.share_observation_space = [
-            gym.spaces.Box(low=share_low, high=share_high) for _ in range(self.n_agents)
-        ]
+        self.observation_space, shared_obs_space = self.obs_space_dict_to_list(self.observation_space)
+        # The shared observation space is a list with as many entries as we have agents.
+        self.unwrapped.share_observation_space = [shared_obs_space for _ in range(self.n_agents)]
 
     def reset(self, *, seed=None, options=None):
         """
@@ -360,6 +367,7 @@ class MultiAgentWrapper(gym.Wrapper):
 
         """
         obs, obs_info = self.env.reset(seed=seed, options=options)
+        self.last_shared_obs = self._get_shared_obs(obs)
         obs = self._unpack_obs(obs)
         obs = ctrl_dict_to_list(obs)
         return obs, obs_info
@@ -402,6 +410,8 @@ class MultiAgentWrapper(gym.Wrapper):
                     act_count = act_count + num_act
         # step original ControlEnv with the transformed action_dict
         obs, rewards, terminated, truncated, info = self.env.step(action_dict)
+        # store shared obs
+        self.last_shared_obs = self._get_shared_obs(obs)
         # convert observation dictionary to list of observations
         obs = self._unpack_obs(obs)
         obs = ctrl_dict_to_list(obs)
@@ -410,6 +420,22 @@ class MultiAgentWrapper(gym.Wrapper):
             self.episode_history = ctrl_dict_to_list(self.env.get_wrapper_attr("episode_history"))
         rewards = ctrl_dict_to_list(rewards)
         return obs, rewards, terminated, truncated, info
+
+    def _get_shared_obs(self, obs: dict) -> np.ndarray:
+        # get shared obs
+        all_obs_ids = []
+        all_obs_values = []
+        for ctrl_id in self.controllers.keys():
+            obs_ids, obs_values = obs_ids_and_values(obs[ctrl_id])
+            all_obs_ids.extend(obs_ids)
+            all_obs_values.extend(obs_values)
+        # remove duplicate entries
+        if self.remove_redundant_obs:
+            all_obs = {obs_id: obs_value for obs_id, obs_value in zip(all_obs_ids, all_obs_values)}
+            shared_obs = np.concatenate([obs for obs in all_obs.values()])
+        else:
+            shared_obs = np.concatenate(all_obs_values)
+        return shared_obs
 
     def _unpack_obs(self, obs: dict) -> np.ndarray:
         """
@@ -489,16 +515,27 @@ class MultiAgentWrapper(gym.Wrapper):
 
         """
         env_obs_space = []
+        all_obs_spaces = []
+        all_obs_keys = []
 
         for agent_id, agent_obs_space in observation_space.items():
-            lower = np.array([])
-            higher = np.array([])
-            for element_id, element_obs_space in recursive_items(agent_obs_space):
-                # print(element_obs_space)
-                lower = np.concatenate((lower, element_obs_space.low))
-                higher = np.concatenate((higher, element_obs_space.high))
-            flat_agent_obs_space = gym.spaces.Box(low=lower, high=higher)
+            element_ids, obs_spaces = obs_ids_and_values(agent_obs_space)
+            lower = [obs_space.low for obs_space in obs_spaces]
+            higher = [obs_space.high for obs_space in obs_spaces]
+            all_obs_keys = all_obs_keys + element_ids
+            all_obs_spaces = all_obs_spaces + obs_spaces
+            flat_agent_obs_space = gym.spaces.Box(low=np.concatenate(lower), high=np.concatenate(higher))
             self.env.get_wrapper_attr("controllers")[agent_id].flattened_obs_space = flat_agent_obs_space
             env_obs_space.append(flat_agent_obs_space)
 
-        return env_obs_space
+        # remove duplicate observations for shared observation space
+        if self.remove_redundant_obs:
+            shared_obs_spaces = {obs_id: obs_value for obs_id, obs_value in zip(all_obs_keys, all_obs_spaces)}
+            shared_obs_spaces = [obs_space for obs_space in shared_obs_spaces.values()]
+        else:
+            shared_obs_spaces = all_obs_spaces
+        shared_obs_space = gym.spaces.Box(
+            low=np.concatenate([obs_space.low for obs_space in shared_obs_spaces]),
+            high=np.concatenate([obs_space.high for obs_space in shared_obs_spaces]),
+        )
+        return env_obs_space, shared_obs_space

@@ -9,7 +9,6 @@ import time
 import warnings
 from collections import OrderedDict, deque
 from datetime import datetime, timedelta
-from itertools import chain
 from typing import List, Tuple, Union
 
 import gymnasium as gym
@@ -844,10 +843,7 @@ class MAPPOTrainer(BaseTrainer):
         # by calling self.envs.seed(seed=self.seed)
         obs, _ = self.envs.reset()
 
-        share_obs = []
-        for o in obs:
-            share_obs.append(list(chain(*o)))
-        share_obs = np.array(share_obs)
+        share_obs = np.array([getattr(self.envs.envs[0], "last_shared_obs")])
 
         for agent_id in range(self.num_agents):
             if not self.use_centralized_V:
@@ -948,10 +944,7 @@ class MAPPOTrainer(BaseTrainer):
         # original: masks[np.array([dones]) is True] = \
         #               np.zeros(((np.array([dones]) is True).sum(), 1), dtype=np.float32)
 
-        share_obs = []
-        for o in obs:
-            share_obs.append(list(chain(*o)))
-        share_obs = np.array(share_obs)
+        share_obs = np.array([getattr(self.envs.envs[0], "last_shared_obs")])
 
         for agent_id in range(self.num_agents):
             if not self.use_centralized_V:

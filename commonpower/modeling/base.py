@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import OrderedDict
 from enum import IntEnum
-from typing import TYPE_CHECKING, Dict, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Union
 
 import gymnasium as gym
 import numpy as np
@@ -768,94 +767,6 @@ class ControllableModelEntity(ModelEntity):
                 }
             )
             return input_space
-
-    def observation_space(self, obs_mask: Tuple[dict, int]):
-        """
-        Determines the observation space of an entity based on the observation mask by retrieving
-        the bounds of the model elements listed in the mask
-
-        Args:
-            obs_mask Tuple(dict, int): tuple with a) dictionary containing the IDs of model elements which should
-            be observed, b) number of forecast steps that should be included in observation
-
-        Returns:
-            None/gym.spaces.Dict: None if the node has no elements that should be observed, else a dictionary as in
-            {model element ID: box observation space}
-
-        """
-        # ToDo: check type of variables/data --> if they are binary, we cannot use box spaces?
-        # for now all model elements with type DATA and STATE are observations
-        observed_model_elements, n_forecasts = obs_mask
-        obs = [e for e in self.model_elements if e.name in observed_model_elements[self.id]]
-        lower = {}
-        upper = {}
-        for e in obs:
-            pyomo_el = self.get_pyomo_element(e.name, self.instance)
-            # for states, we only want to observe the first element
-            if e.type == ElementTypes.STATE:
-                if e.bounds is not None:
-                    lower[e.name] = e.bounds[0]
-                    upper[e.name] = e.bounds[1]
-                else:
-                    lower[e.name] = -np.inf
-                    upper[e.name] = np.inf
-            else:
-                if e.bounds is not None:
-                    lower[e.name] = (
-                        [e.bounds[0] for idx in pyomo_el.index_set()] if pyomo_el.is_indexed() else e.bounds[0]
-                    )
-                    upper[e.name] = (
-                        [e.bounds[1] for idx in pyomo_el.index_set()] if pyomo_el.is_indexed() else e.bounds[1]
-                    )
-                else:
-                    lower[e.name] = [-np.inf for idx in pyomo_el.index_set()] if pyomo_el.is_indexed() else -np.inf
-                    upper[e.name] = [np.inf for idx in pyomo_el.index_set()] if pyomo_el.is_indexed() else np.inf
-                # limit length of observation space to num of desired forecasts
-                lower[e.name] = lower[e.name][0:n_forecasts]
-                upper[e.name] = upper[e.name][0:n_forecasts]
-
-        if lower:
-            obs_space = gym.spaces.Dict(
-                {
-                    el.name: gym.spaces.Box(
-                        low=np.array([lower[el.name]]).reshape((-1,)),
-                        high=np.array([upper[el.name]]).reshape((-1,)),
-                        dtype=np.float64,
-                    )
-                    for el in obs
-                }
-            )
-
-            return obs_space
-        else:
-            return None
-
-    def observe(self, obs_mask: Tuple[dict, int]) -> dict:
-        """
-        Get observations for one node within the system based on the model items within the observation mask.
-
-        Args:
-            obs_mask Tuple(dict, int): tuple with a) dictionary containing the IDs of model elements which should
-            be observed, b) number of forecast steps that should be included in observation
-
-        Returns:
-            dict: dict of observed values as {element ID: value}
-
-        """
-        obs = OrderedDict()
-        observed_model_elements, n_forecasts = obs_mask
-        for el in self.model_elements:
-            if el.name in observed_model_elements[self.id]:
-                # for states, we only want to get the current value
-                if el.type == ElementTypes.STATE:
-                    obs[el.name] = np.array(self.get_value(self.instance, el.name))[0].reshape((1,))
-                else:
-                    obs[el.name] = np.array(self.get_value(self.instance, el.name)[0:n_forecasts])
-
-        if len(obs) == 0:
-            return None
-        else:
-            return obs
 
     def fix_inputs(self, inputs: Dict):
         """
