@@ -1147,6 +1147,161 @@ class HeatPumpWithoutStorageButCOP(Component):
         )
 
 
+class CoolHeatPumpWithoutStorage(Component):
+    """
+    Heat pump that can both heat and cool. \\
+    Without storage but considering a timeseries-based coefficient of performance. \\
+    Default values for H_FH, H_out, tau_building, Cw_FH from
+    https://www.researchgate.net/publication/257778680_Multi-objective_optimal_control_of
+    _an_air-to-water_heat_pump_for_residential_heating/link/545207b60cf2bf864cbac189/download \\
+    H_FH = 1.1 [kW/K] \\
+    H_out = 0.26 [kW/K] \\
+    tau_building = 240 [h] \\
+    Cw_FH = 1.1625 [kWh/K] (note: in the paper they provide this in J/K)
+
+    Dynamics here: https://www.imrtweb.ethz.ch/users/geering/diss_full/diss_bianchi.pdf (Hausmodell 2. Ordnung)
+
+    COP data here: https://www.nature.com/articles/s41597-019-0199-y
+
+    .. runblock:: pycon
+
+        >>> from commonpower.models.components import CoolHeatPumpWithoutStorage
+        >>> CoolHeatPumpWithoutStorage.info()
+
+    """
+
+    CLASS_INDEX = "hpc"
+    MAX_P = 1e3  # maximum absolute charging power (BigM constraint)
+
+    @classmethod
+    def _get_model_elements(cls) -> List[ModelElement]:
+        model_elements = [
+            ModelElement("p", et.VAR, "active power"),
+            ModelElement("p_virtual", et.INPUT, "heating or cooling power indicated by sign", pyo.Reals),
+            # ModelElement("q", et.INPUT, "reactive power"),
+            ModelElement("T_indoor_setpoint", et.CONSTANT, "temperature that should be reached", pyo.Reals),
+            ModelElement("T_indoor", et.STATE, "indoor temperature", pyo.Reals),
+            ModelElement("T_ret_FH", et.STATE, "water temperature of floor heating system", pyo.Reals),
+            # ModelElement("T_sup_HP", et.STATE, "heat pump supply water temperature", pyo.Reals),
+            ModelElement("T_outside", et.DATA, "outside temperature", pyo.Reals),
+            ModelElement("COP", et.DATA, "coefficient of performance", pyo.NonNegativeReals),
+            ModelElement(
+                "H_FH", et.CONSTANT, "thermal conductivity between floor heating and house", pyo.NonNegativeReals
+            ),  # [kW/K]
+            ModelElement(
+                "H_out", et.CONSTANT, "thermal conductivity between house and surrounding", pyo.NonNegativeReals
+            ),  # [kW/K]
+            ModelElement("tau_building", et.CONSTANT, "building time constant ", pyo.NonNegativeReals),
+            # [h]
+            ModelElement(
+                "Cw_FH",
+                et.CONSTANT,
+                "thermal capacity of volume of water in floor heating system",
+                pyo.NonNegativeReals,
+            ),  # [kWh/K]
+            ModelElement("c", et.CONSTANT, "weighting coefficient", pyo.NonNegativeReals),
+        ]
+        return model_elements
+
+    def _get_additional_constraints(self) -> List[ModelElement]:
+        """
+        First constraint sets a binary indicator for heating/cooling. \\
+
+        .. math::
+            p_{hc} = \\left\\{
+            \\begin{array}{ll}
+            1 & p \\geq 0 \\\\
+            0 & \\, \\textrm{otherwise} \\\\
+            \\end{array}
+            \\right.
+
+        Second constraint transforms the virtual power in the range [-p_max, p_max] into
+        the effective power drawn from the grid.
+
+        .. math::
+            p = |p_{virtual}|
+        """
+        mb = MIPExpressionBuilder(self, self.MAX_P)
+
+        mb.from_geq("p_virtual", 0, "p_hc")
+
+        def heat_or_cool(model, t):
+            return self.get_pyomo_element("p", model)[t] == self.get_pyomo_element("p_virtual", model)[
+                t
+            ] * self.get_pyomo_element("p_hc", model)[t] - self.get_pyomo_element("p_virtual", model)[t] * (
+                1 - self.get_pyomo_element("p_hc", model)[t]
+            )
+
+        transform_p = ModelElement("transform_p_virtual", et.CONSTRAINT, "transformation constraint", expr=heat_or_cool)
+
+        return mb.model_elements + [transform_p]
+
+    def _get_dynamic_fcn(self) -> List[ModelElement]:
+        def dynamics_temp_indoor(scenario: ConstraintScenario):
+            def dynamic_temp_indoor_fcn(model, t):
+                if t == self.horizon:
+                    return Constraint.Skip
+                else:
+                    return scenario("T_indoor", model, True)[t + 1] == scenario("T_indoor", model)[t] + self.tau * (
+                        -(
+                            (scenario("H_FH", model) + scenario("H_out", model))
+                            / (scenario("H_out", model) * scenario("tau_building", model))
+                        )
+                        * scenario("T_indoor", model)[t]
+                        + (scenario("H_FH", model) / (scenario("H_out", model) * scenario("tau_building", model)))
+                        * scenario("T_ret_FH", model)[t]
+                        + scenario("T_outside", model)[t] / scenario("tau_building", model)
+                    )
+
+            return dynamic_temp_indoor_fcn
+
+        def dynamics_temp_ret_fh(scenario: ConstraintScenario):
+            def dynamic_temp_ret_fh_fcn(model, t):
+                if t == self.horizon:
+                    return Constraint.Skip
+                else:
+                    return scenario("T_ret_FH", model, True)[t + 1] == scenario("T_ret_FH", model)[t] + self.tau * (
+                        (scenario("H_FH", model) / scenario("Cw_FH", model)) * scenario("T_indoor", model)[t]
+                        - (scenario("H_FH", model) / scenario("Cw_FH", model)) * scenario("T_ret_FH", model)[t]
+                        + (
+                            scenario("p_hc", model)[t]
+                            * scenario("p_virtual", model)[t]
+                            * scenario("COP", model)[t]
+                            / scenario("Cw_FH", model)
+                        )
+                        + (
+                            (1 - scenario("p_hc", model)[t])
+                            * scenario("p_virtual", model)[t]
+                            * scenario("COP", model)[t]
+                            / scenario("Cw_FH", model)
+                        )
+                    )
+
+            return dynamic_temp_ret_fh_fcn
+
+        dyn_temp_indoor = ModelElement(
+            "dynamic_fcn_T_indoor", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics_temp_indoor
+        )
+        dyn_temp_ret_fh = ModelElement(
+            "dynamic_fcn_T_ret_FH", et.ROBUST_CONSTRAINT, "dynamic function", expr=dynamics_temp_ret_fh
+        )
+
+        return [dyn_temp_indoor, dyn_temp_ret_fh]
+
+    def cost_fcn(self, scenario: CostScenario, model: ConcreteModel, t: int = 0) -> Expression:
+        """
+        Cost of discomfort.
+
+        .. math::
+            cost = c * (T_{indoor} - T_{indoor\\_setpoint})^2
+        """
+        return (
+            scenario(self, "c", model)
+            * (scenario(self, "T_indoor", model)[t + 1] - scenario(self, "T_indoor_setpoint", model)) ** 2
+            * self.tau
+        )
+
+
 """ SIMPLIFIED MODELS """
 
 
