@@ -114,3 +114,104 @@ class DCPowerFlowModel(PowerFlowModel):
             f"c_dcpf_{line.id}",
             Constraint(model.t, expr=dcpf, doc=f"dc power flow constraint for line {line.id}"),
         )
+
+
+class LinDistFlowPowerFlowModel(PowerFlowModel):
+    """
+    Models LinDistFlow power flow constraints.
+    Based on https://ieeexplore.ieee.org/document/19266.
+    """
+
+    def _set_sys_constraints(self, model: ConcreteModel, nodes: List[Bus], lines: List[Line]) -> None:
+        """
+        .. math::
+            \\sum_i p_i = 0 \\\\
+            \\sum_i q_i = 0
+        """
+
+        def pb_sys_p(model, t):
+            return quicksum([n.get_pyomo_element("p", model)[t] for n in nodes]) == 0.0
+
+        def pb_sys_q(model, t):
+            return quicksum([n.get_pyomo_element("q", model)[t] for n in nodes]) == 0.0
+
+        model.sys_pb_p = Constraint(model.t, expr=pb_sys_p, doc="global active power balance")
+        model.sys_pb_q = Constraint(model.t, expr=pb_sys_q, doc="global reactive power balance")
+
+    def _set_bus_constraint(self, model: ConcreteModel, nid: int, node: Bus, connected_lines: list[Line]):
+        """
+        Set bus constraints and voltage magnitude of first bus fixed at 1.
+        LinDistFlow implements a radial network power flow model where power flows from parent to child buses.
+        The constraints represent power balance at each bus.
+
+        .. math::
+            p_i = \\sum_{j \\in children(i)} p_j + \\sum_{k \\in parents(i)} p_{k}  \\\\
+            q_i = \\sum_{j \\in children(i)} q_j + \\sum_{k \\in parents(i)} q_{k}  \\\\
+            v_0 = 1
+        """
+        if nid == 0:
+            # fix v (voltage magnitude) of the first bus at 1 (by convention)
+            def slack_v(model, t):
+                return node.get_pyomo_element("v", model)[t] == 1.0
+
+            model.c_slack_v = Constraint(model.t, expr=slack_v, doc="fix slack bus voltage magnitude")
+
+        def lindistpf_p(model, t):
+            # LinDistFlow active power balance
+            # p_i = sum of power flowing out and power flowing in
+            line_power_out = quicksum(
+                [line.dst.get_pyomo_element("p", model)[t] for line in connected_lines if node is line.src]
+            )
+            line_power_in = quicksum(
+                [line.src.get_pyomo_element("p", model)[t] for line in connected_lines if node is line.dst]
+            )
+            return node.get_pyomo_element("p", model)[t] == line_power_in + line_power_out
+
+        def lindistpf_q(model, t):
+            # LinDistFlow reactive power balance
+            # q_i = sum of power flowing out and power flowing in
+            line_power_out = quicksum(
+                [line.dst.get_pyomo_element("q", model)[t] for line in connected_lines if node is line.src]
+            )
+            line_power_in = quicksum(
+                [line.src.get_pyomo_element("q", model)[t] for line in connected_lines if node is line.dst]
+            )
+            return node.get_pyomo_element("q", model)[t] == line_power_in + line_power_out
+
+        setattr(
+            model,
+            f"c_lindistpf_p_{node.id}",
+            Constraint(model.t, expr=lindistpf_p, doc=f"LinDistFlow active power constraint for bus {node.id}"),
+        )
+
+        setattr(
+            model,
+            f"c_lindistpf_q_{node.id}",
+            Constraint(model.t, expr=lindistpf_q, doc=f"LinDistFlow reactive power constraint for bus {node.id}"),
+        )
+
+    def _set_line_constraint(self, model: ConcreteModel, lid: int, line: Line):
+        """
+        Sets LinDistFlow voltage constraints.
+        The voltage drop constraint relates voltage magnitudes between connected buses.
+        Index i is the child bus (line.dst) and k is the parent bus (line.src).
+
+        .. math::
+            v_i = v_k - 2(R_{ik} p_i + X_{ik} q_i) \\\\
+
+        Where R = 1/G (resistance) and X = 1/B (reactance).
+        """
+
+        def lindistpf_voltage(model, t):
+            # LinDistFlow voltage constraint: v_i = v_k - 2(R*P + X*Q)
+            # Approximating v_k ≈ 1 in denominator for linearization
+            return line.dst.get_pyomo_element("v", model)[t] == line.src.get_pyomo_element("v", model)[t] - 2 * (
+                (1 / line.get_pyomo_element("G", model)) * line.dst.get_pyomo_element("p", model)[t]
+                + (1 / line.get_pyomo_element("B", model)) * line.get_pyomo_element("q", model)[t]
+            )
+
+        setattr(
+            model,
+            f"c_lindistpf_v_{line.id}",
+            Constraint(model.t, expr=lindistpf_voltage, doc=f"LinDistFlow voltage constraint for line {line.id}"),
+        )
