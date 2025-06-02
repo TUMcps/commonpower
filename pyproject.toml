@@ -32,7 +32,7 @@ dependencies = [
   "gurobipy==11.0.0",
   "pyomo==6.8.0",
   "prettytable",
-  "stable-baselines3==2.1.0",
+  "stable-baselines3>=2.6.0",
   "pandapower==2.14.11",
   "tqdm",
   "pydantic >= 2.7.0",
