@@ -425,7 +425,7 @@ class MultiAgentWrapper(gym.Wrapper):
         # get shared obs
         all_obs_ids = []
         all_obs_values = []
-        for ctrl_id in self.controllers.keys():
+        for ctrl_id in self.env.get_wrapper_attr("controllers").keys():
             obs_ids, obs_values = obs_ids_and_values(obs[ctrl_id])
             all_obs_ids.extend(obs_ids)
             all_obs_values.extend(obs_values)
