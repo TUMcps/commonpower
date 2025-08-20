@@ -39,6 +39,7 @@ dependencies = [
   "numpy <= 1.26",
   "jsonpickle",
   "pymongo",
+  "d3rlpy",
 ]
 
 [project.optional-dependencies]

@@ -3,6 +3,7 @@ Collection of pre-defined controller types.
 """
 from __future__ import annotations
 
+import pickle
 import warnings
 from collections import OrderedDict
 from copy import copy, deepcopy
@@ -12,12 +13,14 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 import torch as th
+from d3rlpy.models import VectorEncoderFactory
 from pyomo.core import ConcreteModel, Objective, quicksum
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import set_random_seed
 
+from commonpower.control.configs.algorithms import D3RLPyMetaConfig
 from commonpower.control.observation_handling import ObservationHandler
 from commonpower.control.util import clone_from_top_level_nodes, single_step_cost_callback
 from commonpower.core import System
@@ -896,3 +899,257 @@ class RLControllerMA(RLBaseController):
             self.policy_kwargs.use_centralized_V = False
         else:
             raise NotImplementedError
+
+
+class OptimalControllerPyTupli(RLBaseController):
+    def __init__(
+        self,
+        name: str,
+        obs_handler: ObservationHandler = None,
+        train: bool = False,
+        device: str = "cpu",
+        safety_layer=None,
+        cost_callback: Callable = single_step_cost_callback,
+        pretrained_policy_path: str = None,
+        solver: OptSolver = get_default_solver(),
+        control_input_trajectory_length: int = 1,
+        cost_fcn: BaseRobustCost = NominalCost(),
+    ):
+        """
+        Controller class that is essentially an OptimalController but has the same interface as the RL controllers.
+        Used for interfacing PyTupli.
+
+        Args:
+            name (str): name of the controller
+            obs_handler (ObservationHandler): entity that takes care of processing observations for RL controllers.
+            train (bool): whether the controller is in training mode
+            device (str): whether to use 'cpu' or 'cuda' (GPU)
+            safety_layer (BaseSafetyLayer): safety layer instance
+            cost_callback (Callable): function used within the cost function of the controller to compute additional \
+            cost terms
+            pretrained_policy_path (str): directory with stored policy parameters of an existing policy
+        """
+        super().__init__(name=name)
+        self.cost_callback = cost_callback
+        self.ctrl_type = "rl"  # Reinforcement Learning
+        self.device = device
+        self.train = train
+        self.policy = None
+        self.safety_layer = safety_layer
+        self.load_path = pretrained_policy_path
+        self.train_history = {}
+        self.deployment_history = []
+        self.denormalize_inputs = False
+        self.obs_handler = obs_handler or ObservationHandler()
+        self.sys_inst = None
+        self.model = None
+        self.solver = solver
+        self._cost_builder = cost_fcn
+
+        self.control_input_trajectory_length = control_input_trajectory_length  # only one time step for optimal control
+
+    def initialize(self):
+        """
+        Initial set-up of controller and safety layer
+        """
+        self._index_entities()
+        self.top_level_nodes = self.get_top_level_nodes()
+        self.input_space = self.get_input_space()
+        self.obs_handler.set_obs_mask(self.get_nodes())
+
+    def empty_copy(self):
+        """
+        Create a fresh copy of the controller without any history.
+
+        Returns:
+            OptimalController: cloned controller
+        """
+        cloned_controller = OptimalController(
+            name=self.name,
+            solver=self.solver,
+            control_input_trajectory_length=self.control_input_trajectory_length,
+            cost_fcn=self._cost_builder,
+        )
+        return cloned_controller
+
+    def get_objective_fcn(self) -> Callable:
+        """
+        Constructs the objective function for the optimal control problem.
+
+        Returns:
+            Callable: Pyomo expression of the objective function.
+        """
+
+        def _objective_fcn(scenario, model, t):
+            return quicksum([n.cost_fcn(scenario, model, t) for n in self.top_level_nodes])
+
+        return _objective_fcn
+
+    def reset_history(self) -> None:
+        """
+        Delete history
+
+        Returns:
+            None
+
+        """
+        self.history = {}
+
+    def compute_control_input(
+        self, obs: OrderedDict = None, input_callback: Callable = None
+    ) -> Tuple[OrderedDict, float]:
+        """
+        Main functionality of the controller: computes the control inputs which minimize the objective function of the
+        controlled entities while satisfying their constraints.
+
+        Args:
+            obs (OrderedDict): not needed her
+            input_callback (Callable): not needed here
+
+        Returns:
+            Tuple: tuple containing:
+                - action (OrderedDict)
+                - safety penalty (float) (not needed hear, only for RL controllers).
+
+        """
+        if self.train:
+            raise ValueError("OptimalControllerPyTupli is not meant to be used in training mode.")
+        else:
+            if input_callback is None:
+                # we actually want to compute the action (called by DeploymentRunner._run())
+                # get current system pyomo instance
+                self.sys_inst = self.nodes[0].instance
+
+                mdl = clone_from_top_level_nodes(self.top_level_nodes, self.sys_inst)
+
+                self._cost_builder.initialize(self.get_objective_fcn(), len(self.sys_inst.t) - 1)
+                self._cost_builder.add_additional_constraints(mdl)
+
+                mdl.control_obj1 = Objective(expr=self._cost_builder.obj_fcn(mdl))
+
+                self.model = mdl
+
+                results = self.solver.solve(self.model, warmstart=True)
+                self.model.solutions.store_to(results)
+                # catch infeasible solution
+                if results.solver.termination_condition in [
+                    TerminationCondition.infeasible,
+                    TerminationCondition.unbounded,
+                    TerminationCondition.infeasibleOrUnbounded,
+                ]:
+                    with open("infeasible_control_model.log", "w") as f:
+                        self.model.pprint(f)
+                    raise EntityError(self.model, "Cannot find an input satisfying all constraints")
+
+                node_actions = {}
+                for node in self.nodes:
+                    node_action = node.get_inputs(self.model)
+                    if node_action is not None:
+                        node_actions[node.id] = {
+                            el_id: np.array(el_action[: self.control_input_trajectory_length])
+                            for el_id, el_action in node_action.items()
+                        }  # only get first input element to apply to system
+
+                # clip actions to bounds to account for numerical errors
+                node_actions = self.clip_to_bounds(node_actions)
+                # return action as OrderedDict to make it compatible with Gym
+                action = OrderedDict(node_actions)
+
+                verified_action = action  # is safe
+                safety_penalty = 0.0
+            else:
+                # we just pass the action on
+                verified_action = input_callback(self.name)
+                safety_penalty = 0.0
+                action_corrected = False  # no safety correction necessary for optimal control
+                self.update_history({"safety_penalty": safety_penalty, "action_corrected": action_corrected})
+
+        return verified_action, safety_penalty
+
+    def load(self, policy_class=None, env=None, config=None, policy_kwargs=None):
+        pass
+
+
+class RLControllerD3RL(RLBaseController):
+    def save(self, policy, save_path: str = "./saved_models/test_model"):
+        """
+        Save neural network policy parameters and structure.
+
+        Args:
+            policy (BasePolicy): policy trained with algorithm from StableBaselines
+            save_path (str): where to save the policy parameters
+
+        Returns:
+            None
+
+        """
+        raise NotImplementedError("Saving the fine tuned model is not supported at the moment")
+
+    def load(self, env, config: D3RLPyMetaConfig):
+        """
+        Loading a pre-trained policy from a directory.
+
+        Args:
+            env (ControlEnv): The gym environment constructed from the power system the RL algorithm interacts with. \
+            Required to construct the neural network policy because it determines the number of inputs (observations) \
+            and outputs (actions) of the network.
+            config CQLBaseConfig: Configuration for the StableBaselines policy class (also constructs training buffers \
+            etc., which is why this also contains algorithm parameters).
+            policy_kwargs (dict): Configuration of the actual neural networks of the policy (e.g., number of neurons \
+            in the hidden layers of the actor and critic network of an ActorCriticPolicy). Depends on policy type. \
+            Consult the StableBaselines documentation (https://stable-baselines3.readthedocs.io/en/master/) for more \
+            information.
+
+        Returns:
+            None
+
+        """
+
+        # check that a path from which to load the policy has been instantiated
+        if not self.load_path:
+            raise ValueError(
+                "No load path for pre-trained policy! Needs to be handed over in constructor (pretrained_policy_path)"
+            )
+
+        # e.g. cql = d3rlpy.algos.CQLConfig().create() for a continous CQL agent
+        hidden_layer_size = config.hidden_layer_size
+        self.policy = config.algorithm(
+            critic_encoder_factory=VectorEncoderFactory(hidden_units=[hidden_layer_size, hidden_layer_size]),
+            actor_encoder_factory=VectorEncoderFactory(hidden_units=[hidden_layer_size, hidden_layer_size]),
+            **config.algorithm_config.model_dump(),
+        ).create(device=config.device)
+
+        config = config.model_dump()
+        if "mdp_dataset_path" not in config.keys():
+            raise Exception(
+                "We need the path to the MDPDataset (d3rlpy) to figure out the dimensions of the neural network"
+            )
+
+        with open(config["mdp_dataset_path"], "rb") as f:
+            mdp_dataset = pickle.load(f)
+
+        self.policy.build_with_dataset(mdp_dataset)
+
+        self.policy.load_model(self.load_path)
+
+    def predict_action(self, obs: np.ndarray, deterministic: bool = True) -> np.ndarray:
+        """
+        Compute the control action based on a given observation by propagating this observation through the policy
+        network.
+
+        Args:
+            obs (np.ndarray): observation at current time step (has to be numpy array, not dictionary, since a \
+            dictionary cannot be processed by the neural network.)
+            deterministic (bool): Whether to use a deterministic action selection algorithm
+
+        Returns:
+            np.ndarray: control action
+        """
+
+        # actual forward pass of the current policy
+        # if we don't do np.expand_dims, we get the error : "Must have batch dimension"
+        action = self.policy.predict(np.expand_dims(obs, axis=0))  # deterministic
+
+        # d3rlpy also gives us a batched result, and we don't want that
+        action = action[0]
+        return action

@@ -1,6 +1,39 @@
-from abc import ABCMeta
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
+
+
+class D3RLPyAlgorithmBaseConfig(BaseModel):
+    gamma: float = 0.9
+    batch_size: int = 64
+
+
+class D3RLPyCQLConfig(D3RLPyAlgorithmBaseConfig):
+    tau: float = 0.005
+    n_critics: int = 2
+    initial_temperature: float = 1.0
+    initial_alpha: float = 1.0
+    alpha_threshold: float = 10.0
+    conservative_weight: float = 5.0
+    n_action_samples: int = 10
+    soft_q_backup: bool = True
+    max_q_backup: bool = False
+    actor_learning_rate: float = 1e-4
+    critic_learning_rate: float = 3e-4
+    temp_learning_rate: float = 1e-4
+    alpha_learning_rate: float = 1e-4
+
+
+class D3RLPyMetaConfig(BaseModel):
+    seed: int
+    algorithm: Any  # Changed from ABCMeta to Any to accept d3rlpy algorithm configs
+    algorithm_config: D3RLPyAlgorithmBaseConfig
+    penalty_factor: float = 0.0
+    hidden_layer_size: int = 256  # Default hidden layer size for D3RLPy algorithms
+    mdp_dataset_path: str = None
+    device: str = 'cpu'
+    # necessary for Any type
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class SB3AlgorithmBaseConfig(BaseModel):
@@ -42,11 +75,11 @@ class SB3SACConfig(SB3AlgorithmBaseConfig):
 
 class SB3MetaConfig(BaseModel):
     total_steps: int
-    algorithm: ABCMeta
+    algorithm: Any  # Changed from ABCMeta to Any for consistency
     seed: int
     algorithm_config: SB3AlgorithmBaseConfig
     penalty_factor: float = 0.0
-    # necessary for ABCMeta type
+    # necessary for Any type
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
