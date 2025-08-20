@@ -96,7 +96,7 @@ class Observer:
 class ObservationHandler:
     def __init__(
         self,
-        num_forecasts: int = 0,
+        num_forecasts: int = 1,
         observation_types: List[ElementTypes] = [ElementTypes.DATA, ElementTypes.STATE],
         num_past_observations: int = 0,
         global_obs_elements: List[Tuple] = None,
