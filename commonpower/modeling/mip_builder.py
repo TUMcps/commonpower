@@ -14,7 +14,7 @@ from commonpower.modeling.robust_constraints import ConstraintScenario
 
 
 class MIPExpressionBuilder:
-    def __init__(self, entity: ModelEntity, M: int = 1e3, eps: float = 1e-5):
+    def __init__(self, entity: ModelEntity, M: int = 1e3, eps: float = 1e-4):
         """
         The expression builder allows to convert logical expression into mixed integer constraints.
         In the process it also creates all necessary auxiliary variables.
@@ -45,7 +45,7 @@ class MIPExpressionBuilder:
             entity (ModelEntity): Entity used to obtain referenced pyomo model elements from.
             M (int, optional): Constant for bigM constraints. Defaults to 1e3.
             eps (float, optional): Slack value for strict inequalities (pyomo only allows for <=, >=, ==).
-                Defaults to 1e-5.
+                Defaults to 1e-4.
         """
         self.vars = []
         self.model_elements = []

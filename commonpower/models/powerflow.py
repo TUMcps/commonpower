@@ -122,6 +122,14 @@ class LinDistFlowPowerFlowModel(PowerFlowModel):
     Based on https://ieeexplore.ieee.org/document/19266.
     """
 
+    def __init__(
+        self,
+        base_voltage: float = 0.4,  # in kV, default is 0.4kV for distribution networks
+        base_apparent_power: float = 1e2,  # in kVA, default is 100kVA for distribution networks
+    ):
+        self.base_voltage = base_voltage
+        self.base_apparent_power = base_apparent_power
+
     def _set_sys_constraints(self, model: ConcreteModel, nodes: List[Bus], lines: List[Line]) -> None:
         """
         .. math::
@@ -160,23 +168,23 @@ class LinDistFlowPowerFlowModel(PowerFlowModel):
             # LinDistFlow active power balance
             # p_i = sum of power flowing out and power flowing in
             line_power_out = quicksum(
-                [line.dst.get_pyomo_element("p", model)[t] for line in connected_lines if node is line.src]
+                [line.get_pyomo_element("p", model)[t] for line in connected_lines if node is line.src]
             )
-            line_power_in = quicksum(
-                [line.src.get_pyomo_element("p", model)[t] for line in connected_lines if node is line.dst]
+            line_power_in = quicksum(  # only one in radial network
+                [line.get_pyomo_element("p", model)[t] for line in connected_lines if node is line.dst]
             )
-            return node.get_pyomo_element("p", model)[t] == line_power_in + line_power_out
+            return node.get_pyomo_element("p", model)[t] + line_power_in == line_power_out
 
         def lindistpf_q(model, t):
             # LinDistFlow reactive power balance
             # q_i = sum of power flowing out and power flowing in
             line_power_out = quicksum(
-                [line.dst.get_pyomo_element("q", model)[t] for line in connected_lines if node is line.src]
+                [line.get_pyomo_element("q", model)[t] for line in connected_lines if node is line.src]
             )
-            line_power_in = quicksum(
-                [line.src.get_pyomo_element("q", model)[t] for line in connected_lines if node is line.dst]
+            line_power_in = quicksum(  # only one in radial network
+                [line.get_pyomo_element("q", model)[t] for line in connected_lines if node is line.dst]
             )
-            return node.get_pyomo_element("q", model)[t] == line_power_in + line_power_out
+            return node.get_pyomo_element("q", model)[t] + line_power_in == line_power_out
 
         setattr(
             model,
@@ -197,17 +205,37 @@ class LinDistFlowPowerFlowModel(PowerFlowModel):
         Index i is the child bus (line.dst) and k is the parent bus (line.src).
 
         .. math::
-            v_i = v_k - 2(R_{ik} p_i + X_{ik} q_i) \\\\
-
-        Where R = 1/G (resistance) and X = 1/B (reactance).
+            v_i = v_k - 2(R_{ik} p_i + X_{ik} q_i), \\\\
+            where R = 1/G (resistance) and X = 1/B (reactance).
         """
 
         def lindistpf_voltage(model, t):
             # LinDistFlow voltage constraint: v_i = v_k - 2(R*P + X*Q)
-            # Approximating v_k ≈ 1 in denominator for linearization
+            # All values must be in per-unit (pu) for dimensional consistency
+
+            # Convert base units to SI: V_base [V], S_base [VA]
+            V_base = self.base_voltage * 1e3  # kV to V
+            S_base = self.base_apparent_power * 1e3  # kVA to VA
+            Z_base = V_base**2 / S_base  # Ohm
+
+            # Actual impedances in Ohm (assuming G, B in 1/kOhm, so 1/G, 1/B in kOhm)
+            resistance_actual_kohm = 1 / line.get_pyomo_element("G", model)  # kOhm
+            reactance_actual_kohm = 1 / line.get_pyomo_element("B", model)  # kOhm
+            resistance_actual = resistance_actual_kohm * 1e3  # Ohm
+            reactance_actual = reactance_actual_kohm * 1e3  # Ohm
+
+            # Convert to per-unit
+            resistance_pu = resistance_actual / Z_base
+            reactance_pu = reactance_actual / Z_base
+
+            # Power flows in W/VA (convert kW/kVAr to W/VA)
+            p_actual = line.get_pyomo_element("p", model)[t] * 1e3  # kW to W
+            q_actual = line.get_pyomo_element("q", model)[t] * 1e3  # kVAr to VAr
+            p_pu = p_actual / S_base
+            q_pu = q_actual / S_base
+
             return line.dst.get_pyomo_element("v", model)[t] == line.src.get_pyomo_element("v", model)[t] - 2 * (
-                (1 / line.get_pyomo_element("G", model)) * line.dst.get_pyomo_element("p", model)[t]
-                + (1 / line.get_pyomo_element("B", model)) * line.get_pyomo_element("q", model)[t]
+                resistance_pu * p_pu + reactance_pu * q_pu
             )
 
         setattr(

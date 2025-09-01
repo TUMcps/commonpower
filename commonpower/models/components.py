@@ -456,8 +456,8 @@ class EV(Component):
             indexed=False,
         )
 
-        mb = MIPExpressionBuilder(self, self.MAX_P, eps=1e-5)
-        mb1 = MIPExpressionBuilder(self, self.MAX_P, eps=1e-5)
+        mb = MIPExpressionBuilder(self, self.MAX_P)
+        mb1 = MIPExpressionBuilder(self, self.MAX_P)
 
         mb.from_geq("p", 0, "p_ec")
 
@@ -791,7 +791,7 @@ class EVData(Component):
             indexed=False,
         )
 
-        mb = MIPExpressionBuilder(self, self.MAX_P, eps=1e-5)
+        mb = MIPExpressionBuilder(self, self.MAX_P)
 
         mb.from_geq("p", 0, "p_ec")
 

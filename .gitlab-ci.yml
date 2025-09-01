@@ -1,4 +1,4 @@
-image: ${CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX}/python:3.10
+image: ${CI_DEPENDENCY_PROXY_DIRECT_GROUP_IMAGE_PREFIX}/python:3.11
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
@@ -25,7 +25,8 @@ workflow:
     - if: '$CI_COMMIT_BRANCH'
 
 before_script:
-    - pip install --upgrade pip 
+    - pip install --upgrade pip
+    - pip install uv
     - echo "Fetching Gurobi license"
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
 
@@ -46,21 +47,25 @@ flake8 linting:
   allow_failure: false
   script:
     - python --version
-    - pip --version
-    - pip install flake8
-    - flake8
+    - uv --version
+    - uv venv
+    - source .venv/bin/activate || .venv\Scripts\activate
+    - uv pip install flake8
+    - flake8 commonpower
 
 # the extra work is for the MARL test (installation of onpolicy library)
 test:
   stage: test
   script:
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
-    - pip install pytest pytest-cov
+    - uv venv
+    - source .venv/bin/activate || .venv\Scripts\activate
+    - uv pip install pytest pytest-cov
     - git clone https://github.com/TUMcps/on-policy.git
     - cd on-policy
-    - pip install -e .
+    - uv pip install -e .
     - cd ..
-    - pip install -e .[ci]
+    - uv pip install -e .[ci]
     - pytest --cov=commonpower --cov-report term --cov-report xml:coverage.xml tests/
   coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
   artifacts:
@@ -69,47 +74,17 @@ test:
         coverage_format: cobertura
         path: coverage.xml
 
-pip_py_310:
-  stage: extended_test
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.10
-  script:
-    - git clone https://github.com/TUMcps/on-policy.git
-    - cd on-policy
-    - pip install -e .
-    - cd ..
-    - pip install .[ci]
-    - python -m pytest
-  rules:
-    - changes:
-      - .gitlab-ci.yml
-      - pyproject.toml
-    - if: $CI_COMMIT_BRANCH == "PUBLIC"
-
-pip_py_311:
-  stage: extended_test
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.11
-  script:
-    - git clone https://github.com/TUMcps/on-policy.git
-    - cd on-policy
-    - pip install -e .
-    - cd ..
-    - pip install .[ci]
-    - python -m pytest
-  rules:
-    - changes:
-      - .gitlab-ci.yml
-      - pyproject.toml
-    - if: $CI_COMMIT_BRANCH == "PUBLIC"
-
 pip_py_312:
   stage: extended_test
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.12
   script:
+    - uv venv
+    - source .venv/bin/activate || .venv\Scripts\activate
     - git clone https://github.com/TUMcps/on-policy.git
     - cd on-policy
-    - pip install -e .
+    - uv pip install -e .
     - cd ..
-    - pip install .[ci]
+    - uv pip install .[ci]
     - python -m pytest
   rules:
     - changes:
@@ -120,7 +95,7 @@ pip_py_312:
 upload_to_pypi:
   stage: deploy
   script:
-    - pip install build twine
+    - uv pip install build twine
     - python -m build
     - TWINE_PASSWORD=${PYPI_TOKEN} TWINE_USERNAME=__token__ python -m twine upload dist/*
   rules:

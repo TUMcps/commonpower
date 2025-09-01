@@ -18,17 +18,20 @@ from commonpower.models.powerflow import *
 
 
 class PandaPowerImporter:
-    def __init__(self, bus_type: Bus = Bus):
+    def __init__(self, bus_type: Bus = Bus, base_voltage_kV: float = 0.4):
         """
         This class can be used to import pandapower networks into CommonPower.
         It specifies a mapping between pandapower and CommonPower elements and outputs the converted system.
-        At the moment, this importer only imports busses, lines, and trafos (as high admittance lines) and
+        At the moment, this importer only imports busses and lines, and
         does not consider any components or data sources.
+        We assume a net-wide voltage level and import trafos as (very) high admittance lines.
 
         Args:
             node_type (Node): (Sub-)Class of Node to be mapped to pandapower busses. Defaults to Node.
+            base_voltage_kV (float, optional): Base voltage of the network in kV. Defaults to 0.4 (400V).
         """
         self.mapping = {
+            # voltage in p.u.
             "bus": (bus_type, {"name": lambda x: x["name"]}, {"v": lambda x: (x["min_vm_pu"], x["max_vm_pu"])}),
             "line": (
                 BasicLine,
@@ -39,12 +42,10 @@ class PandaPowerImporter:
                 },
                 {
                     "I": lambda x: (-x["max_i_ka"], x["max_i_ka"]),
-                    # Multiply with standard distribution net voltage (400V) to get power limits (in kW)
-                    # We apply a factor 10 to have more flexibility for power demands.
-                    # TODO: pull this from the voltage level of connected busses.
-                    "p": lambda x: (-x["max_i_ka"] * 0.4 * 1e4, x["max_i_ka"] * 0.4 * 1e4),
-                    "G": lambda x: 1 / (x["r_ohm_per_km"] * x["length_km"]),
-                    "B": lambda x: 1 / (x["x_ohm_per_km"] * x["length_km"]),
+                    # Multiply with net voltage (400V) to get power limits (in kW)
+                    "p": lambda x: (-x["max_i_ka"] * base_voltage_kV * 1e3, x["max_i_ka"] * base_voltage_kV * 1e3),
+                    "G": lambda x: 1 / (x["r_ohm_per_km"] * x["length_km"] / 1e3),  # convert to kOhm
+                    "B": lambda x: 1 / (x["x_ohm_per_km"] * x["length_km"] / 1e3),  # convert to kOhm
                 },
             ),
             # We treat Trafos as Lines with very high admittance
