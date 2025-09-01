@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(".."))  # Source code dir relative to this fi
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "CommonPower"
-copyright = "2024, TUM CPS"
+copyright = "2025, TUM CPS"
 author = "Michael Eichelbeck, Hannah Markgraf"
 release = "1.0"
 

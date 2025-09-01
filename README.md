@@ -104,36 +104,27 @@ If you use CommonPower, please cite the corresponding [tool paper](https://arxiv
 Installing CommonPower
 ----------------------
 
-You will need [Python](https://www.python.org/downloads/) >= 3.8 installed on your system.
+You will need [Python](https://www.python.org/downloads/) >= 3.11, <3.13 and the package manager [uv](https://github.com/astral-sh/uv) installed on your system.
 
 We recommend using a [virtual environment](https://docs.python.org/3/library/venv.html) to work with CommonPower. 
-To create a virtual environment run
+To create and activate a virtual environment run
 ```bash
-python -m venv </path/to/new/virtual/environment>
-```
-You can then activate the virtual environment.
-
-Linux: 
-```bash
-source <path/to/venv>/bin/activate
-```
-
-Windows:
-```bash
-<path/to/venv>\Scripts\activate.bat
+cd <your/working/directory>
+uv venv
+source ./.venv/bin/activate || .\.venv\Scripts\activate 
 ```
 
 You can then proceed to install CommonPower.
-For local development, install the library in editable mode:
+For local development, install the library in editable mode using UV:
 ```bash
-cd <your/working/directory>
 git clone "https://github.com/TUMcps/commonpower.git"
-pip install -e <absolute/path/to/the/commonpower/directory>
+cd commonpower
+uv sync
 ```
 
 Otherwise, install CommonPower via PyPI:
 ```bash
-pip install commonpower
+uv pip install commonpower
 ```
 
 Multi-agent reinforcement learning
@@ -141,7 +132,7 @@ Multi-agent reinforcement learning
 
 At the moment, CommonPower supports multi-agent reinforcement learning using the IPPO/MAPPO implementation detailed in this [paper](https://arxiv.org/abs/2103.01955). 
 Since we had to make a few adjustments, we forked the original repository. Please clone our [fork](https://github.com/TUMcps/on-policy), cd into the repository and install the package to your virtual environment using
-`pip install -e .`.
+`uv pip install -e .`.
 
 Gurobi
 ------
