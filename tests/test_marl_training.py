@@ -150,12 +150,19 @@ class TestControl(unittest.TestCase):
         for i in range(len(sys.nodes) - 1):
             # will also add a controller to households which do not have inputs (e.g., households with only a Load component),
             # but these are disregarded when the system is initialized
-            print("test")
-            _ = RLControllerMA(
-                name=str.join("agent", str(i)),
-                obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),
-                safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
-            ).add_entity(sys.nodes[i])
+            if i==0: 
+                # first agent also gets the load of the second agent as obs (to test global obs functionality)
+                _ = RLControllerMA(
+                    name=str.join("agent", str(i)),
+                    obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1, global_obs_elements=[(d2, ["p"])]),
+                    safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
+                ).add_entity(sys.nodes[i])
+            else:
+                _ = RLControllerMA(
+                    name=str.join("agent", str(i)),
+                    obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),
+                    safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
+                ).add_entity(sys.nodes[i])
 
         # set up logger
         logger = MARLTensorboardLogger(log_dir="./tests/artifacts/test_run/", callback=MARLBaseCallback)
@@ -174,12 +181,14 @@ class TestControl(unittest.TestCase):
         # deployment
         # load pre-trained policies
         load_path = "./saved_models/test_model"  # default location
+        # first agent also gets the load of the second agent as obs (to test global obs functionality)
         trained_agent_1 = RLControllerMA(
             name="trained_mappo_agent_1",
-            obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),
+            obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1, global_obs_elements=[(d2, ["p"])]),
             safety_layer=ActionProjectionSafetyLayer(penalty=DistanceDependingPenalty(penalty_factor=10.0)),
             pretrained_policy_path=load_path + "/agent0",
         ).add_entity(sys.nodes[0])
+        # second agent only has local obs
         trained_agent_2 = RLControllerMA(
             name="trained_mappo_agent_2",
             obs_handler=ObservationHandler(num_forecasts=4, num_past_observations=1),

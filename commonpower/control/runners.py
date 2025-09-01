@@ -9,12 +9,12 @@ import time
 import warnings
 from collections import OrderedDict, deque
 from datetime import datetime, timedelta
-from itertools import chain
 from typing import List, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
 import torch
+import wandb
 from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 from stable_baselines3 import PPO, SAC
@@ -22,8 +22,7 @@ from stable_baselines3.common.base_class import BasePolicy
 from stable_baselines3.common.utils import safe_mean
 from tqdm import tqdm
 
-import wandb
-from commonpower.control.configs.algorithms import MAPPOBaseConfig, SB3MetaConfig
+from commonpower.control.configs.algorithms import D3RLPyMetaConfig, MAPPOBaseConfig, SB3MetaConfig
 from commonpower.control.controllers import OptimalController, RLBaseController
 from commonpower.control.environments import ControlEnv
 from commonpower.control.logging_utils.loggers import BaseLogger, TensorboardLogger
@@ -47,6 +46,7 @@ class BaseRunner:
         solver: OptSolver = get_default_solver(),
         seed: int = None,
         normalize_actions: bool = True,
+        limited_date_range: List[datetime] = None,
     ):
         """
         Base class for any runner for power system control with one or multiple agents. Initializes the system and its
@@ -65,7 +65,8 @@ class BaseRunner:
             solver (OptSolver): solver for optimization problem
             seed (int): seed for the global random number generator of numpy (we use np.random.seed(seed) instead
             of instantiating our own generator)
-            normalize_actions (bool): whether or not to normalize the action space
+            normalize_actions (bool): whether or not to normalize the action space,
+            limited_date_range (list): limits the system's date range such that we only train over a specific interval
 
         Returns:
             BaseRunner
@@ -97,6 +98,7 @@ class BaseRunner:
             self.seed = random.randint(1, 100)
         # normalizing actions of controllers (just matters for RL controllers)
         self.normalize_actions = normalize_actions
+        self.limited_date_range = limited_date_range
 
     def run(self, n_steps: int = 24, fixed_start: datetime = None) -> None:
         """
@@ -129,7 +131,6 @@ class BaseRunner:
             horizon=self.horizon,
             episode_horizon=eps_horizon,
             tau=self.dt,
-            continuous_control=self.continuous_control,
             solver=self.solver,
         )
         # test whether system set-up is feasible
@@ -146,6 +147,9 @@ class BaseRunner:
             self.start_time = self.sys.sample_start_date(fixed_start=self.fixed_start)
         self.sys.reset(self.start_time)
         self.model_inst = self.sys.instance
+        # limit date range of system
+        if self.limited_date_range is not None:
+            self.sys.limit_date_range(start=self.limited_date_range[0], end=self.limited_date_range[1])
 
     def finish_run(self):
         """
@@ -254,8 +258,8 @@ class BaseTrainer(BaseRunner):
             solver=solver,
             seed=seed,
             normalize_actions=normalize_actions,
+            limited_date_range=limited_date_range,
         )
-        self.limited_date_range = limited_date_range
         # environment wrapper function
         self.wrapper = wrapper
         # model save path
@@ -272,9 +276,6 @@ class BaseTrainer(BaseRunner):
 
         """
         super().prepare_run()
-        # limit date range of system to only start training after changes
-        if self.limited_date_range is not None:
-            self.sys.limit_date_range(start=self.limited_date_range[0], end=self.limited_date_range[1])
 
         # create environment function according to gymnasium API
         if len(list(self.sys.get_controllers(ctrl_types=[RLBaseController]))) >= 1:
@@ -359,6 +360,8 @@ class SingleAgentTrainer(BaseTrainer):
             self.logger = TensorboardLogger(log_dir="./default_log/")
         else:
             self.logger = logger
+        if continuous_control:
+            self.episode_length = self.alg_config.total_steps
 
     def _run(self, n_steps: int = 24):
         """
@@ -420,7 +423,7 @@ class DeploymentRunner(BaseRunner):
         self,
         sys: System,
         global_controller: OptimalController = None,
-        alg_config: Union[SB3MetaConfig, MAPPOBaseConfig] = None,
+        alg_config: Union[SB3MetaConfig, MAPPOBaseConfig, D3RLPyMetaConfig] = None,
         wrapper: gym.Wrapper = None,
         horizon: timedelta = timedelta(hours=24),
         dt: timedelta = timedelta(minutes=60),
@@ -468,6 +471,7 @@ class DeploymentRunner(BaseRunner):
         )
         self.alg_config = alg_config
         self.wrapper = wrapper
+        self.episode_length = None
 
     def _run(self, n_steps: int = 24):
         """
@@ -480,6 +484,10 @@ class DeploymentRunner(BaseRunner):
             None
 
         """
+        if self.continuous_control:
+            self.episode_length = int(
+                timedelta(hours=24) / self.dt
+            )  # necessary to generate a terminated/truncated flag
         self.prepare_run()
         # run
         obs, _ = self.env.reset()
@@ -503,9 +511,9 @@ class DeploymentRunner(BaseRunner):
                 # we essentially only update the model history here
                 self.sys.terminal_step(self.history)
 
-            if terminated or truncated:
-                if self.rl_controllers:
-                    obs, _ = self.env.reset()
+            # if terminated or truncated:
+            #     if self.rl_controllers:
+            #         obs, _ = self.env.reset()
 
         self.finish_run()
 
@@ -529,15 +537,18 @@ class DeploymentRunner(BaseRunner):
                 fixed_start=self.fixed_start,
                 normalize_actions=self.normalize_actions,
                 history=self.history,
+                episode_length=self.episode_length,
             )
         )
+
         # set train flag of environment to False
         self.env.unwrapped.set_mode("deploy")
         # set train flag of RL runners to False
         for rl_ctrl in self.rl_controllers.values():
             rl_ctrl.set_mode("deploy")
             # load RL policies
-            self.alg_config.seed = self.seed  # need to hand over the seed to re-load the policy
+            if self.alg_config:
+                self.alg_config.seed = self.seed  # need to hand over the seed to re-load the policy
             if not rl_ctrl.policy:
                 rl_ctrl.load(env=self.env, config=self.alg_config)
 
@@ -629,6 +640,8 @@ class MAPPOTrainer(BaseTrainer):
         self.trainer = []  # list of training algorithm objects for each agent
         self.buffer = []  # list of buffers for each agent
         self.ep_info_buffer = []  # list of buffers for each agent which contain infos for each episode
+        if self.continuous_control:
+            self.episode_length = self.num_env_steps
 
     def prepare_run(self):
         # import these here such that no errors will be thrown in case someone does not have the on-policy repo
@@ -653,7 +666,6 @@ class MAPPOTrainer(BaseTrainer):
             horizon=self.horizon,
             episode_horizon=self.dt * self.episode_length,
             tau=self.dt,
-            continuous_control=self.continuous_control,
         )
         # test whether system set-up is feasible
         self.system_feasible()
@@ -683,7 +695,7 @@ class MAPPOTrainer(BaseTrainer):
         def make_vec_env(all_args, system):
             def get_env_fn():
                 def init_env():
-                    env = ControlEnv(system=system)
+                    env = ControlEnv(system=system, episode_length=self.episode_length)
                     if self.wrapper:
                         env = self.wrapper(env)
                     return env
@@ -844,10 +856,7 @@ class MAPPOTrainer(BaseTrainer):
         # by calling self.envs.seed(seed=self.seed)
         obs, _ = self.envs.reset()
 
-        share_obs = []
-        for o in obs:
-            share_obs.append(list(chain(*o)))
-        share_obs = np.array(share_obs)
+        share_obs = np.array([getattr(self.envs.envs[0], "last_shared_obs")])
 
         for agent_id in range(self.num_agents):
             if not self.use_centralized_V:
@@ -948,10 +957,7 @@ class MAPPOTrainer(BaseTrainer):
         # original: masks[np.array([dones]) is True] = \
         #               np.zeros(((np.array([dones]) is True).sum(), 1), dtype=np.float32)
 
-        share_obs = []
-        for o in obs:
-            share_obs.append(list(chain(*o)))
-        share_obs = np.array(share_obs)
+        share_obs = np.array([getattr(self.envs.envs[0], "last_shared_obs")])
 
         for agent_id in range(self.num_agents):
             if not self.use_centralized_V:

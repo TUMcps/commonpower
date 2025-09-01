@@ -18,6 +18,7 @@ from pyomo.opt import TerminationCondition
 from pyomo.opt.solver import OptSolver
 
 from commonpower.control.environments import ControlEnv
+from commonpower.control.observation_handling import Observer
 from commonpower.data_forecasting import DataProvider
 from commonpower.modeling.base import ControllableModelEntity, ElementTypes, ModelElement, ModelEntity
 from commonpower.modeling.history import ModelHistory
@@ -124,7 +125,6 @@ class System(ControllableModelEntity):
         self.horizon_int = None
 
         self.start_time = None  # start of simulation time
-        self.continuous_control = None  # whether to consider an infinite control horizon
 
         self.date_range = None  # date range of data
 
@@ -135,6 +135,8 @@ class System(ControllableModelEntity):
         self.solver = None  # solver for optimization problem
 
         self._cost_builder: BaseRobustCost = None
+
+        self.observer = Observer()
 
     def empty_copy(self, with_entities: bool = True) -> System:
         """
@@ -188,7 +190,6 @@ class System(ControllableModelEntity):
         episode_horizon: timedelta = timedelta(hours=0),
         horizon: timedelta = timedelta(hours=24),
         tau: timedelta = timedelta(hours=1),
-        continuous_control: bool = False,
         solver: OptSolver = get_default_solver(),
     ) -> None:
         """
@@ -205,14 +206,12 @@ class System(ControllableModelEntity):
                 the controllers "look into the future". Defaults to 24h.
             tau (timedelta, optional): Sample time, i.e., the period of time between to control actions.
                 This needs to match the frequency of data providers. Defaults to timedelta(hours=1).
-            continuous_control (bool): whether to use an infinite control horizon
             solver (OptSolver, optional): Solver instance for the optimization problem that will be called by Pyomo.
         """
         self.tau = tau
         self.horizon = horizon
         self.horizon_int = int(self.horizon / self.tau)
         self.episode_horizon = episode_horizon
-        self.continuous_control = continuous_control
         self.solver = solver
 
         # check if all data providers have appropriate forecast horizon and data frequency
@@ -364,7 +363,7 @@ class System(ControllableModelEntity):
 
     def create_env_func(
         self,
-        episode_length: int = 24,
+        episode_length,
         wrapper: gym.Wrapper = None,
         fixed_start: datetime = None,
         normalize_actions: bool = True,
@@ -391,7 +390,6 @@ class System(ControllableModelEntity):
         def init_env():
             env = ControlEnv(
                 system=self,
-                continuous_control=self.continuous_control,
                 episode_length=episode_length,
                 fixed_start=fixed_start,
                 normalize_action_space=normalize_actions,
@@ -411,6 +409,11 @@ class System(ControllableModelEntity):
             raise ValueError(f"End time has to be before {self.date_range[1]}.")
         self.date_range[0] = start
         self.date_range[1] = end
+        if start + self.episode_horizon >= end:
+            raise ValueError(
+                f"Start time {start} + episode horizon {self.episode_horizon} has to be before end time {end}."
+            )
+        self.date_range[1] = end - self.episode_horizon
 
     def _calc_date_range(self) -> list[datetime]:
 
@@ -553,6 +556,15 @@ class System(ControllableModelEntity):
         info = {}
         return obs, costs, info
 
+    def observe(self) -> dict:
+        """
+        Observe all system states and external variables
+
+        Returns:
+            dict: dictionary of {controller_id: controller_observation}
+        """
+        return self.observer.observe(self.controllers)
+
     def terminal_step(
         self,
         history: ModelHistory = None,
@@ -607,27 +619,6 @@ class System(ControllableModelEntity):
 
         if history:
             history.log(inst, self.t)
-
-    def observe(self) -> dict:
-        """
-        Get observations for all controllers within the system.
-
-        Returns:
-            dict: dictionary of {controller_id: controller_observation}
-
-        """
-        obs = OrderedDict()
-        for ctrl_id, ctrl in self.controllers.items():
-            ctrl_obs = OrderedDict()
-            nodes = ctrl.get_nodes()
-            nodes = [n for n in nodes if not isinstance(n, System)]
-            for node in nodes:
-                node_obs = node.observe(ctrl.obs_mask)
-                if node_obs is not None:
-                    ctrl_obs[node.id] = node_obs
-            obs[ctrl_id] = ctrl_obs
-        obs_info = {}
-        return obs, obs_info
 
     def pprint(self) -> None:
         """

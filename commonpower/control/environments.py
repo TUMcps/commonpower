@@ -18,8 +18,7 @@ class ControlEnv(gym.Env):
     def __init__(
         self,
         system: ControllableModelEntity,
-        continuous_control: bool = False,
-        episode_length: int = 24,
+        episode_length,
         fixed_start: datetime = None,
         normalize_action_space: bool = True,
         history: ModelHistory = None,
@@ -31,7 +30,6 @@ class ControlEnv(gym.Env):
 
         Args:
             system (ControllableModelEntity): power system including Pyomo model with all constraints
-            continuous_control (bool): if true, the environment is never resetted
             episode_length (int): how many environment interaction steps to complete before resetting the environment
             fixed_start (datetime): if None, we will train from multiple random start times.
                 Otherwise, we will always train from the same start time.
@@ -63,8 +61,6 @@ class ControlEnv(gym.Env):
         else:
             self.action_space = self._get_action_space()
 
-        # whether to just continuously step through the year or not
-        self.continuous_control = continuous_control
         # step counter
         self.completed_steps = 0
         self.episode_length = episode_length
@@ -241,10 +237,7 @@ class ControlEnv(gym.Env):
             tuple(bool, bool): Done, truncated
         """
         done = False
-        if self.continuous_control:
-            truncated = False
-        else:
-            truncated = self.completed_steps == self.episode_length
+        truncated = self.completed_steps % self.episode_length == 0
 
         return done, truncated
 
