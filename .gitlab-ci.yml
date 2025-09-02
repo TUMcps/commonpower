@@ -30,6 +30,9 @@ before_script:
     - echo "Fetching Gurobi license"
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
 
+after_script:
+  - uv cache prune --ci
+
 stages:
   - static_check
   - test
