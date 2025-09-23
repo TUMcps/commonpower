@@ -30,6 +30,9 @@ before_script:
     - echo "Fetching Gurobi license"
     - curl --silent "https://gitlab.com/gitlab-org/incubation-engineering/mobile-devops/download-secure-files/-/raw/main/installer" | bash
 
+after_script:
+  - uv cache prune --ci
+
 stages:
   - static_check
   - test
@@ -95,6 +98,8 @@ pip_py_312:
 upload_to_pypi:
   stage: deploy
   script:
+    - uv venv
+    - source .venv/bin/activate || .venv\Scripts\activate
     - uv pip install build twine
     - python -m build
     - TWINE_PASSWORD=${PYPI_TOKEN} TWINE_USERNAME=__token__ python -m twine upload dist/*

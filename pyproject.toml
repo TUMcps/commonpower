@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "commonpower"
-version = "0.6.1"
+version = "0.6.2"
 authors = [
   { name="Michael Eichelbeck", email="michael.eichelbeck@tum.de" },
   { name="Hannah Markgraf", email="hannah.markgraf@tum.de" },
@@ -72,3 +72,11 @@ skip-string-normalization = true
 [tool.isort]
 profile = "black"
 line_length = 120
+
+[tool.hatch.build]
+exclude = [
+    "node_modules/",
+    ".venv/",
+    "build/",
+    "dist/",
+]
